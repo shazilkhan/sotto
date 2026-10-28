@@ -230,13 +230,32 @@ fn levenshtein(a: &str, b: &str) -> usize {
 /// "Niamh", "supa base" -> "Supabase"); swapping Friday for Monday is an
 /// edit to the meaning, not a spelling fix.
 fn sounds_alike(heard: &str, word: &str) -> bool {
-    let a: String = heard.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect();
-    let b = word.to_lowercase();
+    let (a, b) = (letters(heard), letters(word));
     if a.chars().next() != b.chars().next() {
         return false;
     }
     let longest = a.chars().count().max(b.chars().count()).max(1);
     levenshtein(&a, &b) * 10 <= longest * 8
+}
+
+/// Lowercase letters and digits only: "Supa base" -> "supabase".
+fn letters(s: &str) -> String {
+    s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// A respelling rather than a different word: at most 40% of the letters
+/// change ("Superbase" -> "Supabase", but not "Thanks" -> "Thx").
+fn respelled(heard: &str, word: &str) -> bool {
+    let (a, b) = (letters(heard), letters(word));
+    let longest = a.chars().count().max(b.chars().count()).max(1);
+    levenshtein(&a, &b) * 10 <= longest * 4
+}
+
+/// At either end of the paste the field may go on with other text, so the
+/// typed words are the one to three that read most like what was heard.
+fn closest_span(heard: &str, f: &[&str], spans: impl Iterator<Item = Range<usize>>) -> Option<Range<usize>> {
+    let h = letters(heard);
+    spans.min_by_key(|r| levenshtein(&h, &letters(&f[r.clone()].concat())))
 }
 
 const SMALL_NUMBERS: &[&str] = &[
@@ -332,28 +351,31 @@ fn number_fix(p: &[&str], f: &[&str], pairs: &[(usize, usize)], gap: &Gap) -> Op
     Some((p[ps..pe].join(" "), f[fs..fe].join(" ")))
 }
 
-/// A misheard name or term swapped for the right one ("Neve" -> "Niamh",
-/// "supa base" -> "Supabase"). In a short message every first word is
-/// capitalised, so `short` asks for stronger signs it's a name: words
-/// joined into one, or capitals or digits inside the word. Retyping a
-/// one-word "Thanks" as "Thx" is a style change, not a mishearing.
+/// A misheard name or term swapped for the right one, one to three words
+/// on either side: "Neve" -> "Niamh", "supa base" -> "Supabase",
+/// "Superbase" -> "Supa base". In a short message every first word is
+/// capitalised, so `short` asks for more when it's one word for one word:
+/// capitals or digits inside it, or a close respelling. Retyping a one-word
+/// "Thanks" as "Thx" is a style change, not a mishearing.
 fn term_fix(p: &[&str], f: &[&str], gap: &Gap, short: bool) -> Option<(String, String)> {
     let heard = &p[gap.heard.clone()];
-    if heard.len() > 2 || gap.fixed.len() != 1 {
-        return None;
-    }
-    let word = f[gap.fixed.start];
-    if short && heard.len() < 2 && !word.chars().skip(1).any(|c| c.is_uppercase() || c.is_ascii_digit()) {
+    let fixed = &f[gap.fixed.clone()];
+    if heard.len() > 3 || fixed.len() > 3 {
         return None;
     }
     let heard_text = heard.join(" ");
-    let ok = word.chars().count() >= 3
-        && looks_like_term(word)
-        && word.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '\'')
-        && !heard_text.eq_ignore_ascii_case(word)
-        && sounds_alike(&heard_text, word)
+    let word = fixed.join(" ");
+    let inner_mark = fixed.iter().any(|w| w.chars().skip(1).any(|c| c.is_uppercase() || c.is_ascii_digit()));
+    if short && heard.len() == 1 && fixed.len() == 1 && !inner_mark && !respelled(&heard_text, &word) {
+        return None;
+    }
+    let ok = letters(&word).chars().count() >= 3
+        && fixed.iter().any(|w| looks_like_term(w))
+        && fixed.iter().all(|w| w.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '\''))
+        && !heard_text.eq_ignore_ascii_case(&word)
+        && sounds_alike(&heard_text, &word)
         && !(heard.len() == 1 && COMMON.contains(&heard[0].to_lowercase().as_str()));
-    ok.then(|| (heard_text, word.to_string()))
+    ok.then_some((heard_text, word))
 }
 
 /// The same word with its capitals fixed into a mixed-case name ("github"
@@ -416,14 +438,21 @@ pub fn find_corrections(pasted: &str, field: &str) -> Vec<(String, String)> {
     } else {
         let (first, last) = (pairs[0], pairs[pairs.len() - 1]);
         if first.0 > 0 && first.1 > 0 {
-            gaps.push(Gap { heard: 0..first.0, fixed: first.1 - 1..first.1, left: None, right: Some(0) });
+            let heard = p[..first.0].join(" ");
+            if let Some(fixed) = closest_span(&heard, f, (1..=first.1.min(3)).map(|k| first.1 - k..first.1)) {
+                gaps.push(Gap { heard: 0..first.0, fixed, left: None, right: Some(0) });
+            }
         }
         for (k, w) in pairs.windows(2).enumerate() {
             let ((pi, fj), (pi2, fj2)) = (w[0], w[1]);
             gaps.push(Gap { heard: pi + 1..pi2, fixed: fj + 1..fj2, left: Some(k), right: Some(k + 1) });
         }
         if last.0 + 1 < n && last.1 + 1 < m {
-            gaps.push(Gap { heard: last.0 + 1..n, fixed: last.1 + 1..last.1 + 2, left: Some(pairs.len() - 1), right: None });
+            let heard = p[last.0 + 1..].join(" ");
+            let spans = (1..=(m - last.1 - 1).min(3)).map(|k| last.1 + 1..last.1 + 1 + k);
+            if let Some(fixed) = closest_span(&heard, f, spans) {
+                gaps.push(Gap { heard: last.0 + 1..n, fixed, left: Some(pairs.len() - 1), right: None });
+            }
         }
     }
 
@@ -478,6 +507,18 @@ mod tests {
         // A one-word restyle, or a short paste inside other typed text, isn't learned.
         assert!(find_corrections("Thanks.", "Thx").is_empty());
         assert!(find_corrections("Supa base", "Earlier I wrote about Supabase").is_empty());
+    }
+
+    #[test]
+    fn learns_one_word_split_into_two() {
+        let got = find_corrections("Superbase.", "Supa base");
+        assert_eq!(got, vec![("Superbase".to_string(), "Supa base".to_string())]);
+        let got = find_corrections("We moved the auth to superbase.", "We moved the auth to Supa base. More text");
+        assert_eq!(got, vec![("superbase".to_string(), "Supa base".to_string())]);
+        let got = find_corrections("Superbase", "Supabase");
+        assert_eq!(got, vec![("Superbase".to_string(), "Supabase".to_string())]);
+        // Split into ordinary lowercase words: a grammar edit, not a name.
+        assert!(find_corrections("We should meet anyway tomorrow.", "We should meet any way tomorrow.").is_empty());
     }
 
     #[test]
