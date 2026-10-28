@@ -128,7 +128,7 @@ See `docs/AI-CLEANUP-PLAN.md`.
 | Cleanup | `src-tauri/src/cleanup.rs` | The Light rules above, plus the `--bench-cleanup` harness. |
 | Smart | `src-tauri/src/smart.rs` | Claude Haiku 5.5 over plain HTTPS, with the cue gate, a 3 s timeout and reply checks. The key is in Windows Credential Manager (`secret.rs`). It connects only while you dictate, opening the connection as you start talking. |
 | Pill | `src-tauri/src/pill.rs` | WS_EX_NOACTIVATE layered window, Direct2D (software) + DirectWrite, its own thread. |
-| Learning | `src-tauri/src/learn.rs` | After a paste, UI Automation re-reads that one field once (never password fields) and aligns it with what was pasted. The client exists only for that check. |
+| Learning | `src-tauri/src/learn.rs` | For 25 s after a paste, UI Automation reads that one field (never password fields): at each Enter, before a chat app sends and clears it, and twice a second, keeping the last reading that held still. The reading is aligned with what was pasted and then dropped. The client exists only for that check. |
 | History | `src-tauri/src/transcripts.rs` | One JSON line per dictation, with retention and per-item delete. |
 | Paste | `src-tauri/src/clipboard.rs` | Snapshot every clipboard format, paste with Ctrl+V, restore after 400 ms unless you copied something new. Writes are hidden from Win+V history. |
 | Mute | `src-tauri/src/mute.rs` | Per-app mute of sessions that are playing; crash-safe (restored on next start). |

@@ -1,17 +1,20 @@
 //! Learns spellings from the user's own fixes. Right after a paste, the
 //! focused text field is remembered. At the next dictation (or after 25 s)
 //! it's read once more, and a name the user retyped in place ("Neve" ->
-//! "Niamh") becomes a Dictionary entry. Pressing Enter in the meantime also
-//! reads it, because a chat box empties the moment Enter sends the message.
+//! "Niamh") becomes a Dictionary entry. A chat box empties the moment a
+//! message is sent, so in the meantime the field is also read at each
+//! Enter (before the app gets it) and twice a second, keeping the latest
+//! reading that held still.
 //!
-//! Privacy: only the field that was pasted into is read, never a password
-//! field, and nothing is kept except the learned word pair. UI
+//! Privacy: only the field that was pasted into is read, only for those
+//! 25 s, never a password field, and nothing is kept except the learned
+//! word pair. UI
 //! Automation calls run on their own thread, so a slow or hung app can't
 //! stall dictation.
 
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use windows::Win32::System::Com::{
@@ -26,6 +29,9 @@ use windows::Win32::UI::Accessibility::{
 const CHECK_AFTER: Duration = Duration::from_secs(25);
 /// The longest Enter is held back while the field is read.
 const ENTER_WAIT: Duration = Duration::from_millis(150);
+/// How often the field is read while a paste is watched, to catch the fix
+/// before a Send button clears it.
+const POLL: Duration = Duration::from_millis(500);
 const MAX_FIELD_CHARS: i32 = 20_000;
 const MAX_LEARN_PER_PASTE: usize = 2;
 
@@ -86,18 +92,40 @@ pub fn watch(pasted: &str) {
             let automation: windows::core::Result<IUIAutomation> =
                 CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER);
             if let Some(el) = automation.ok().and_then(|a| a.GetFocusedElement().ok()) {
+                let kind = el.CurrentControlType().map(|t| t.0).unwrap_or(0);
+                let class: String = el.CurrentClassName().map(|c| c.to_string()).unwrap_or_default().chars().take(30).collect();
+                log::info!("learning: watching a text box (type {kind}, class '{class}')");
                 // Until the next dictation, a newer paste or the timeout,
-                // keep the field as it was at the latest Enter.
+                // keep the latest good reading: the field at an Enter, or
+                // the field once it holds still between two checks.
                 let deadline = Instant::now() + CHECK_AFTER;
-                let mut at_enter = None;
-                while let Ok(Cmd::Snapshot(done)) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                    if let Some(text) = read_field(&el) {
-                        at_enter = Some(text);
+                let mut good: Option<(String, &str)> = None;
+                let mut prev: Option<String> = None;
+                loop {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        break;
                     }
-                    let _ = done.send(());
+                    match rx.recv_timeout(left.min(POLL)) {
+                        Ok(Cmd::Snapshot(done)) => {
+                            let text = read_field(&el);
+                            let _ = done.send(());
+                            if let Some(text) = text.filter(|t| has_words(t)) {
+                                good = Some((text, "at Enter"));
+                            }
+                        }
+                        Err(RecvTimeoutError::Timeout) => {
+                            let text = read_field(&el);
+                            if let Some(t) = text.as_ref().filter(|t| has_words(t) && prev.as_ref() == Some(t)) {
+                                good = Some((t.clone(), "while it held still"));
+                            }
+                            prev = text;
+                        }
+                        Ok(Cmd::Check) | Err(RecvTimeoutError::Disconnected) => break,
+                    }
                 }
                 if let Some(on_learn) = ON_LEARN.get() {
-                    check(&pasted, read_field(&el), at_enter, on_learn.as_ref());
+                    check(&pasted, read_field(&el), good, on_learn.as_ref());
                 }
             }
         }
@@ -133,13 +161,17 @@ fn holds_paste(pasted: &str, field: &str) -> bool {
     !p.is_empty() && kept * 2 >= p.len()
 }
 
+fn has_words(text: &str) -> bool {
+    text.split_whitespace().next().is_some()
+}
+
 /// Uses the field as it is now, unless the paste has gone from it (the
-/// message was sent, or the box was cleared) and there's a reading from the
-/// last Enter. Logs why nothing was learned, without any of the text.
-fn check(pasted: &str, now: Option<String>, at_enter: Option<String>, on_learn: &dyn Fn(String, String)) {
-    let (field, when) = match (now, at_enter) {
+/// message was sent, or the box was cleared) and there's an earlier good
+/// reading. Logs why nothing was learned, without any of the text.
+fn check(pasted: &str, now: Option<String>, good: Option<(String, &str)>, on_learn: &dyn Fn(String, String)) {
+    let (field, when) = match (now, good) {
         (Some(now), _) if holds_paste(pasted, &now) => (now, "now"),
-        (_, Some(at_enter)) => (at_enter, "at Enter"),
+        (_, Some(good)) => good,
         (Some(now), None) => (now, "now"),
         (None, None) => return log::info!("learning: couldn't read the text box"),
     };
