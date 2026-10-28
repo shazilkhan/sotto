@@ -69,6 +69,20 @@
         <span>Start with Windows</span>
         <input type="checkbox" id="startWithWindows" class="switch" />
       </label>
+      <label class="row">
+        <span>
+          Keep transcripts on this PC
+          <small>For tuning text cleanup. Saved in your AppData, never uploaded</small>
+        </span>
+        <input type="checkbox" id="keepTranscripts" class="switch" />
+      </label>
+      <div class="row sub" id="transcripts-actions" hidden>
+        <small id="transcript-count"></small>
+        <span>
+          <button type="button" class="link" id="transcripts-show">Show file</button>
+          <button type="button" class="link" id="transcripts-clear">Delete all</button>
+        </span>
+      </div>
     </section>
 
     <section class="card">

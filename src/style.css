@@ -39,6 +39,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   padding: 18px 16px 20px;
@@ -124,6 +128,18 @@ h2 {
 .row small {
   display: block;
   color: var(--muted);
+  font-size: 12px;
+}
+
+.row.sub {
+  padding-top: 0;
+}
+
+button.link {
+  margin: 0 0 0 12px;
+  padding: 0;
+  background: none;
+  color: var(--accent);
   font-size: 12px;
 }
 

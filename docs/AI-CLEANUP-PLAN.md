@@ -1,6 +1,9 @@
 # AI cleanup pass: plan
 
-Status: proposed 2026-10-28. Nothing built yet.
+Status: phase 0 built 2026-10-28 (transcript log, `--bench-cleanup`,
+`eval/cases.jsonl`). Baseline with no cleanup: 9/25 seed cases pass, which
+are exactly the cases that must be left alone. Collecting real dictations
+next.
 
 ## Goal
 

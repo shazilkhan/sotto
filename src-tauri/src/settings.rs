@@ -17,6 +17,8 @@ pub struct Settings {
     /// 0 unloads right away, -1 keeps it loaded.
     pub keep_model_mins: i32,
     pub start_with_windows: bool,
+    /// Append each dictation to a local JSONL file for tuning cleanup.
+    pub keep_transcripts: bool,
 }
 
 impl Default for Settings {
@@ -29,6 +31,7 @@ impl Default for Settings {
             trailing_space: true,
             keep_model_mins: 15,
             start_with_windows: true,
+            keep_transcripts: false,
         }
     }
 }

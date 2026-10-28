@@ -17,7 +17,7 @@ use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use crate::audio::{self, Recorder, TARGET_RATE};
 use crate::hotkey::{self, HotkeyEvent};
 use crate::settings::Settings;
-use crate::{clipboard, model, mute, sounds};
+use crate::{cleanup, clipboard, context, model, mute, sounds, transcripts};
 
 /// Keep recording briefly after release; people let go on the last syllable.
 const TAIL: Duration = Duration::from_millis(150);
@@ -30,9 +30,20 @@ const HISTORY_LEN: usize = 20;
 
 pub enum Msg {
     Hotkey(HotkeyEvent),
-    Transcribed { result: Result<String, String>, audio_secs: f32, took: Duration },
+    Transcribed(Result<Transcript, String>),
     /// Settings changed; recompute timers.
     Wake,
+}
+
+pub struct Transcript {
+    /// Straight from the speech model.
+    pub raw: String,
+    /// After cleanup; this is what gets pasted.
+    pub text: String,
+    pub app: Option<String>,
+    pub audio_secs: f32,
+    /// Resample plus speech recognition.
+    pub took: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -162,6 +173,8 @@ struct Engine {
     app: AppHandle,
     shared: Arc<Shared>,
     recording: Option<(Recorder, Instant)>,
+    /// App that had focus when the hotkey went down.
+    focused_app: Option<String>,
     muted: Option<mute::Muted>,
     pending: usize,
     last_used: Instant,
@@ -218,6 +231,7 @@ impl Engine {
             let _ = self.app.run_on_main_thread(move || crate::open_settings(&app));
             return;
         }
+        self.focused_app = context::foreground_exe();
         let s = self.shared.settings();
         let t = Instant::now();
         match Recorder::start(s.mic.as_deref()) {
@@ -276,15 +290,17 @@ impl Engine {
         self.pending += 1;
         self.refresh_status();
         let shared = self.shared.clone();
+        let app = self.focused_app.clone();
         std::thread::spawn(move || {
             let t = Instant::now();
             let audio = audio::resample(&samples, rate, TARGET_RATE);
-            let result = if audio::peak(&audio) < SILENCE_PEAK {
-                Ok(String::new())
-            } else {
-                shared.transcribe(&audio)
-            };
-            let _ = shared.tx.send(Msg::Transcribed { result, audio_secs: secs, took: t.elapsed() });
+            let raw = if audio::peak(&audio) < SILENCE_PEAK { Ok(String::new()) } else { shared.transcribe(&audio) };
+            let took = t.elapsed();
+            let result = raw.map(|raw| {
+                let text = cleanup::clean(&raw, &cleanup::Context { app: app.clone() });
+                Transcript { raw, text, app, audio_secs: secs, took }
+            });
+            let _ = shared.tx.send(Msg::Transcribed(result));
         });
     }
 
@@ -294,28 +310,35 @@ impl Engine {
         }
     }
 
-    fn on_transcribed(&mut self, result: Result<String, String>, audio_secs: f32, took: Duration) {
+    fn on_transcribed(&mut self, result: Result<Transcript, String>) {
         self.pending = self.pending.saturating_sub(1);
         self.last_used = Instant::now();
         let s = self.shared.settings();
         match result {
-            Ok(text) if !text.is_empty() => {
-                log::info!("{audio_secs:.1}s of audio -> {} chars in {} ms", text.chars().count(), took.as_millis());
-                let mut out = text.clone();
+            Ok(t) if !t.text.is_empty() => {
+                let took_ms = t.took.as_millis() as u64;
+                log::info!("{:.1}s of audio -> {} chars in {took_ms} ms", t.audio_secs, t.text.chars().count());
+                let mut out = t.text.clone();
                 if s.trailing_space {
                     out.push(' ');
                 }
                 clipboard::paste(&out);
+                let at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                if s.keep_transcripts {
+                    transcripts::append(&transcripts::Entry {
+                        at,
+                        app: t.app.clone(),
+                        audio_secs: t.audio_secs,
+                        asr_ms: took_ms,
+                        cleaned: (t.text != t.raw).then(|| t.text.clone()),
+                        raw: t.raw,
+                    });
+                }
                 let mut history = self.shared.history.lock().unwrap();
-                history.push_front(HistoryItem {
-                    text,
-                    at: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
-                    audio_secs,
-                    took_ms: took.as_millis() as u64,
-                });
+                history.push_front(HistoryItem { text: t.text, at, audio_secs: t.audio_secs, took_ms });
                 history.truncate(HISTORY_LEN);
             }
-            Ok(_) => log::info!("{audio_secs:.1}s of audio, nothing heard"),
+            Ok(t) => log::info!("{:.1}s of audio, nothing heard", t.audio_secs),
             Err(e) => log::error!("transcription failed: {e}"),
         }
         if s.keep_model_mins == 0 && self.pending == 0 && self.recording.is_none() {
@@ -357,6 +380,7 @@ pub fn run(app: AppHandle, shared: Arc<Shared>, rx: Receiver<Msg>) {
         app,
         shared,
         recording: None,
+        focused_app: None,
         muted: None,
         pending: 0,
         last_used: Instant::now(),
@@ -367,7 +391,7 @@ pub fn run(app: AppHandle, shared: Arc<Shared>, rx: Receiver<Msg>) {
             Ok(Msg::Hotkey(HotkeyEvent::Pressed)) => engine.on_pressed(),
             Ok(Msg::Hotkey(HotkeyEvent::Released)) => engine.on_released(),
             Ok(Msg::Hotkey(HotkeyEvent::Cancelled)) => engine.on_cancelled(),
-            Ok(Msg::Transcribed { result, audio_secs, took }) => engine.on_transcribed(result, audio_secs, took),
+            Ok(Msg::Transcribed(result)) => engine.on_transcribed(result),
             Ok(Msg::Wake) => engine.refresh_status(),
             Err(RecvTimeoutError::Timeout) => engine.on_tick(),
             Err(RecvTimeoutError::Disconnected) => break,

@@ -1,7 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+mod cleanup;
 mod clipboard;
+mod context;
 mod engine;
 mod hotkey;
 mod icons;
@@ -10,6 +12,7 @@ mod model;
 mod mute;
 mod settings;
 mod sounds;
+mod transcripts;
 mod tray;
 
 use engine::{Download, HistoryItem, Msg, Shared, Status};
@@ -29,6 +32,7 @@ struct UiState {
     model_bytes: u64,
     download: Download,
     history: Vec<HistoryItem>,
+    transcript_count: usize,
     hotkeys: Vec<(&'static str, &'static str)>,
     version: &'static str,
 }
@@ -105,6 +109,7 @@ async fn get_state(shared: State<'_, Arc<Shared>>) -> Result<UiState, String> {
         model_bytes: model::total_bytes(),
         download: shared.download.lock().unwrap().clone(),
         history: shared.history.lock().unwrap().iter().cloned().collect(),
+        transcript_count: transcripts::count(),
         hotkeys: hotkey::PRESETS.iter().map(|p| (p.0, p.1)).collect(),
         version: env!("CARGO_PKG_VERSION"),
     })
@@ -142,6 +147,27 @@ async fn download_model(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Resul
 }
 
 #[tauri::command]
+async fn clear_transcripts(app: AppHandle) -> Result<(), String> {
+    transcripts::clear().map_err(|e| e.to_string())?;
+    emit_state(&app);
+    Ok(())
+}
+
+#[tauri::command]
+async fn show_transcripts() -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let path = transcripts::path();
+    let mut cmd = std::process::Command::new("explorer");
+    if path.exists() {
+        // Explorer wants the quotes after the comma, so build the arg by hand.
+        cmd.raw_arg(format!("/select,\"{}\"", path.display()));
+    } else {
+        cmd.arg(settings::data_dir());
+    }
+    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn copy_text(text: String) -> Result<(), String> {
     if clipboard::copy(&text) {
         Ok(())
@@ -152,9 +178,11 @@ async fn copy_text(text: String) -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if let [_, flag, wav] = args.as_slice() {
-        if flag == "--bench" {
-            return engine::bench(wav);
+    if let [_, flag, file] = args.as_slice() {
+        match flag.as_str() {
+            "--bench" => return engine::bench(file),
+            "--bench-cleanup" => return cleanup::bench(file),
+            _ => {}
         }
     }
     logger::init();
@@ -163,7 +191,15 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| open_settings(app)))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
-        .invoke_handler(tauri::generate_handler![get_state, list_mics, save_settings, download_model, copy_text])
+        .invoke_handler(tauri::generate_handler![
+            get_state,
+            list_mics,
+            save_settings,
+            download_model,
+            clear_transcripts,
+            show_transcripts,
+            copy_text
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             let first_run = settings::is_first_run();

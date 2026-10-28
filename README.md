@@ -80,6 +80,21 @@ end-to-end paste test. It takes keyboard focus for about 10 seconds.
 `sotto.exe --bench file.wav` (16 kHz mono 16-bit) prints model load and
 transcription times for a machine.
 
+## Tuning text cleanup
+
+The cleanup step (filler words, corrections, lists) is planned in
+`docs/AI-CLEANUP-PLAN.md`. Right now it passes text through unchanged, so
+there's a baseline to measure against.
+
+- **Collect:** turn on "Keep transcripts on this PC" in settings. Each
+  dictation is appended to `%LOCALAPPDATA%\Sotto\transcripts.jsonl` with the
+  raw text, the app's exe name (never window titles), the speech length and
+  the timing. It's off by default, nothing is uploaded, and "Delete all"
+  removes the file.
+- **Measure:** `sotto.exe --bench-cleanup eval/cases.jsonl` runs the
+  hand-written cases and prints every failure. Point it at
+  `transcripts.jsonl` to see what cleanup would change in real dictations.
+
 ## Roadmap
 
 1. AI cleanup pass: filler words, "no wait, Tuesday" corrections, lists.

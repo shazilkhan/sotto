@@ -9,6 +9,7 @@ type Settings = {
   trailingSpace: boolean;
   keepModelMins: number;
   startWithWindows: boolean;
+  keepTranscripts: boolean;
 };
 
 type UiState = {
@@ -19,12 +20,13 @@ type UiState = {
   modelBytes: number;
   download: { active: boolean; done: number; total: number; error: string | null };
   history: { text: string; at: number; audioSecs: number; tookMs: number }[];
+  transcriptCount: number;
   hotkeys: [string, string][];
   version: string;
 };
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
-const toggles = ["muteWhileDictating", "sounds", "trailingSpace", "startWithWindows"] as const;
+const toggles = ["muteWhileDictating", "sounds", "trailingSpace", "startWithWindows", "keepTranscripts"] as const;
 
 let state: UiState | null = null;
 
@@ -96,6 +98,11 @@ function render(s: UiState) {
     }),
   );
   $("history-empty").hidden = s.history.length > 0;
+
+  const n = s.transcriptCount;
+  $("transcripts-actions").hidden = !s.settings.keepTranscripts && n === 0;
+  $("transcript-count").textContent = n === 1 ? "1 dictation saved" : `${n} dictations saved`;
+  $("transcripts-clear").hidden = n === 0;
   $("version").textContent = `v${s.version}`;
 }
 
@@ -130,6 +137,13 @@ async function loadMics() {
 
 for (const id of ["hotkey", "mic", "keepModelMins", ...toggles]) $(id).addEventListener("change", save);
 $("download-retry").addEventListener("click", () => invoke("download_model").then(refresh));
+$("transcripts-show").addEventListener("click", () => invoke("show_transcripts"));
+$("transcripts-clear").addEventListener("click", async () => {
+  const n = state?.transcriptCount ?? 0;
+  if (!confirm(`Delete ${n} saved ${n === 1 ? "dictation" : "dictations"}? This can't be undone.`)) return;
+  await invoke("clear_transcripts");
+  await refresh();
+});
 
 listen("state-changed", refresh);
 refresh().then(loadMics);
