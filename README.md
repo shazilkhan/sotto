@@ -91,7 +91,7 @@ microseconds:
   lose the final full stop
 
 It never rewords, and it makes no false edits on the seed cases. The cases
-it can't pass need context.
+it can't pass need context. With Smart, 45 of the 46 cases pass.
 
 **Smart** is opt-in. It's Light plus a pass by Claude Haiku 5.5
 (`src-tauri/src/smart.rs`) for what depends on meaning:
@@ -109,8 +109,9 @@ How it behaves:
   else pastes at Light speed and never leaves the PC.
 - **Audio never leaves the PC.** Only the text is sent, along with the
   app's name and your Dictionary words as spelling hints.
-- **It never holds you up.** If the reply takes more than 3 seconds, or
-  looks like a rewrite or an answer, the Light text is pasted.
+- **It never holds you up.** A call takes about 1 second (p90 under
+  2 s on the test cases). If a reply takes more than 3 seconds, or looks
+  like a rewrite or an answer, the Light text is pasted.
 - **It runs on your own Anthropic API key.** The key is kept in Windows
   Credential Manager. At Haiku's price ($0.10 / $0.50 per million tokens), a
   call costs about $0.0001.
@@ -125,7 +126,7 @@ See `docs/AI-CLEANUP-PLAN.md`.
 | Mic | `src-tauri/src/audio.rs` | cpal/WASAPI, opened on press, closed on release. Windowed-sinc resample to 16 kHz. Splits long audio at quiet points. Feeds peak levels to the pill. |
 | Speech | `src-tauri/src/engine.rs` | NVIDIA Parakeet TDT 0.6B v3 (int8 ONNX) via `transcribe-rs`, on CPU. |
 | Cleanup | `src-tauri/src/cleanup.rs` | The Light rules above, plus the `--bench-cleanup` harness. |
-| Smart | `src-tauri/src/smart.rs` | Claude Haiku 5.5 over plain HTTPS, with the cue gate, a 3 s timeout and reply checks. The key is in Windows Credential Manager (`secret.rs`). Nothing runs or connects until a dictation needs it. |
+| Smart | `src-tauri/src/smart.rs` | Claude Haiku 5.5 over plain HTTPS, with the cue gate, a 3 s timeout and reply checks. The key is in Windows Credential Manager (`secret.rs`). It connects only while you dictate, opening the connection as you start talking. |
 | Pill | `src-tauri/src/pill.rs` | WS_EX_NOACTIVATE layered window, Direct2D (software) + DirectWrite, its own thread. |
 | Learning | `src-tauri/src/learn.rs` | After a paste, UI Automation re-reads that one field once (never password fields) and aligns it with what was pasted. The client exists only for that check. |
 | History | `src-tauri/src/transcripts.rs` | One JSON line per dictation, with retention and per-item delete. |

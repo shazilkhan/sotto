@@ -27,7 +27,7 @@ Make only these changes:
 
 1. Self-corrections. When the speaker corrects something they just said, keep only the corrected version and drop the correction words ("no wait", "I mean", "sorry", "scratch that"). Words like "actually", "sorry" or "I mean" are not corrections unless they replace something said just before.
 
-2. Numbers. Use digits for amounts, money, percentages, times, dates, ages, measurements, versions, scores, phone numbers, numbers in names, and any count of 10 or more. Keep one to nine as words in plain counts ("two options"), and keep number words that aren't quantities ("one of them", "no one", "the one I want", "once").
+2. Numbers. Use digits for amounts, money, percentages, times, dates, ages, measurements, versions, scores, phone numbers, numbers in names, and any count of 10 or more. Write times like 3:30 PM and 9 AM. Keep one to nine as words when they just count things, even in a question or a request ("two options", "three reasons", "give me four ideas"), and keep number words that aren't quantities ("one of them", "no one", "the one I want", "once").
 
 3. Lists. When the speaker counts items out ("first ..., second ...", "number one ..., number two ..."), put each item on its own line as a numbered list (1., 2., 3.). Keep any lead-in sentence on its own line before the list. Capitalise each item and drop its final full stop. Don't turn a sentence that just mentions a few things into a list.
 
@@ -98,8 +98,25 @@ pub fn needs(text: &str) -> bool {
 fn agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
-        ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).http_status_as_error(false).build().new_agent()
+        ureq::Agent::config_builder()
+            .timeout_global(Some(TIMEOUT))
+            .http_status_as_error(false)
+            // Long enough to outlast a long hands-free dictation after warm_up.
+            .max_idle_age(Duration::from_secs(120))
+            .build()
+            .new_agent()
     })
+}
+
+/// Opens the connection to the API while the user is still talking, so the
+/// real request skips the TCP and TLS setup. Sends no key and no text: the
+/// reply is a 401 that's read and discarded, leaving the connection pooled.
+pub fn warm_up() {
+    let _ = std::thread::Builder::new().name("smart-warm".into()).spawn(|| {
+        if let Ok(resp) = agent().get("https://api.anthropic.com/v1/models").call() {
+            let _ = resp.into_body().read_to_string();
+        }
+    });
 }
 
 /// "slack.exe" -> "Slack (a chat app)", so numbers and terms can follow

@@ -14,7 +14,14 @@ Status:
     list or a spoken symbol is sent.
   - The case set grew to 46, with 11 Smart-only cases.
   - Not built yet: the OpenAI-compatible client and the local model.
-  - Smart has not been benchmarked against the live API yet.
+  - Measured on the live API, 2026-10-28:
+    - 45 of 46 cases pass, on two runs in a row. 18 of the 46 were sent.
+    - Per call: p50 about 1.1 s, p90 about 1.8 s, max about 2 s. None fell
+      back.
+    - The connection opens when the hotkey goes down, so the TLS setup
+      happens while the user talks.
+    - The one failure is "Npm run dev." in VS Code. It has no cue, and VS
+      Code could be its editor or its terminal.
 
 ## Goal
 

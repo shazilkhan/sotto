@@ -317,6 +317,9 @@ impl Engine {
         self.muted_count = 0;
         pill::set(PillState::Listening { muted: 0, hands_free: false });
         self.shared.preload();
+        if s.cleanup == "smart" && secret::is_set() {
+            smart::warm_up();
+        }
         if s.sounds {
             sounds::start();
         }

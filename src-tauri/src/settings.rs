@@ -88,7 +88,8 @@ pub fn is_first_run() -> bool {
 pub fn load() -> Settings {
     std::fs::read_to_string(settings_path())
         .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
+        // Editors like Notepad and PowerShell 5 may add a byte-order mark.
+        .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
         .unwrap_or_default()
 }
 
