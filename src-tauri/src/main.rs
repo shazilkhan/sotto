@@ -177,7 +177,7 @@ fn on_learned(app: &AppHandle, heard: String, word: String) {
         log::warn!("saving dictionary: {e}");
     }
     drop(dict);
-    pill::set(PillState::Message { text: format!("Added {word} to Dictionary"), error: false, ttl_ms: Some(2600) });
+    pill::note(format!("Added {word} to Dictionary"));
     emit_state(app);
 }
 

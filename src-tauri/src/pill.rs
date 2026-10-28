@@ -87,6 +87,18 @@ struct Shared {
     /// Hands-free mode: the hover hint says "tap" instead of "hold".
     tap: bool,
     reset_pos: bool,
+    /// A note that arrived mid-dictation, shown once the pill settles.
+    pending: Option<String>,
+}
+
+const NOTE_MS: u32 = 2600;
+
+/// What the pill shows when it goes back to rest: a waiting note, or idle.
+fn settled(s: &mut Shared) -> PillState {
+    match s.pending.take() {
+        Some(text) => PillState::Message { text, error: false, ttl_ms: Some(NOTE_MS) },
+        None => PillState::Idle,
+    }
 }
 
 static SHARED: Mutex<Option<Shared>> = Mutex::new(None);
@@ -117,10 +129,29 @@ fn with_shared<R>(f: impl FnOnce(&mut Shared) -> R) -> Option<R> {
 
 pub fn set(state: PillState) {
     let changed = with_shared(|s| {
+        let state = if state == PillState::Idle { settled(s) } else { state };
         if s.state == state && !matches!(state, PillState::Pasted) {
             return false;
         }
         s.state = state;
+        s.since = Instant::now();
+        true
+    });
+    if changed == Some(true) {
+        post_sync();
+    }
+}
+
+/// A short note such as "Added Supabase to Dictionary". During a
+/// dictation it waits until the text is pasted, so it never covers the
+/// listening pill.
+pub fn note(text: String) {
+    let changed = with_shared(|s| {
+        if matches!(s.state, PillState::Listening { .. } | PillState::Writing | PillState::Pasted) {
+            s.pending = Some(text);
+            return false;
+        }
+        s.state = PillState::Message { text, error: false, ttl_ms: Some(NOTE_MS) };
         s.since = Instant::now();
         true
     });
@@ -684,7 +715,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let _ = KillTimer(Some(hwnd), TIMER_REVERT);
                 with_shared(|s| {
                     if matches!(s.state, PillState::Pasted | PillState::Message { .. }) {
-                        s.state = PillState::Idle;
+                        s.state = settled(s);
+                        s.since = Instant::now();
                     }
                 });
                 p.sync();
@@ -768,6 +800,7 @@ pub fn start(mode: &str, label: &str, tap: bool, pos: Option<(i32, i32)>, events
         label: label.to_string(),
         tap,
         reset_pos: false,
+        pending: None,
     });
     let _ = EVENTS.set(events);
     std::thread::Builder::new()
