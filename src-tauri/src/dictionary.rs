@@ -49,6 +49,19 @@ pub fn normalize(entries: Vec<Entry>) -> Vec<Entry> {
 /// Adds `heard` as a spelling of `word`, creating the word if it's new.
 /// Returns false when the dictionary already knew it.
 pub fn learn(entries: &mut Vec<Entry>, heard: &str, word: &str) -> bool {
+    // A capitals fix ("github" -> "GitHub") needs only the spelling: the word
+    // itself already matches any casing.
+    if heard.eq_ignore_ascii_case(word) {
+        if let Some(e) = entries.iter_mut().find(|e| e.word.eq_ignore_ascii_case(word)) {
+            if e.word == word {
+                return false;
+            }
+            e.word = word.to_string();
+            return true;
+        }
+        entries.insert(0, Entry { word: word.to_string(), aliases: vec![], learned: true });
+        return true;
+    }
     if let Some(e) = entries.iter_mut().find(|e| e.word.eq_ignore_ascii_case(word)) {
         if e.aliases.iter().any(|a| a.eq_ignore_ascii_case(heard)) {
             return false;

@@ -19,7 +19,7 @@ use crate::dictionary::Entry;
 use crate::hotkey::{self, HotkeyEvent};
 use crate::pill::{self, PillState};
 use crate::settings::Settings;
-use crate::{cleanup, clipboard, context, learn, model, mute, sounds, stats, transcripts};
+use crate::{cleanup, clipboard, context, learn, model, mute, secret, smart, sounds, stats, transcripts};
 
 /// Keep recording briefly after release; people let go on the last syllable.
 const TAIL: Duration = Duration::from_millis(150);
@@ -55,6 +55,8 @@ pub struct Transcript {
     pub audio_secs: f32,
     /// Resample plus speech recognition.
     pub took: Duration,
+    /// How long the Smart pass took, when it ran (even if it fell back).
+    pub smart_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -171,6 +173,28 @@ impl Shared {
 
     pub fn model_loaded(&self) -> bool {
         self.model.try_lock().map(|s| s.is_some()).unwrap_or(true)
+    }
+}
+
+/// Light, then the Smart pass when the text has a cue for it. Any failure
+/// (no key, offline, slow, odd reply) pastes the Light text instead.
+fn smart_clean(raw: &str, ctx: &cleanup::Context) -> (String, Option<u64>) {
+    let light = cleanup::light(raw, ctx);
+    if !smart::needs(&light) || !secret::is_set() {
+        return (cleanup::finish(&light, ctx), None);
+    }
+    let t = Instant::now();
+    let result = smart::fix(&light, ctx.app.as_deref(), &ctx.dictionary);
+    let ms = t.elapsed().as_millis() as u64;
+    match result {
+        Ok(fixed) => {
+            log::info!("smart pass in {ms} ms");
+            (cleanup::finish(&fixed, ctx), Some(ms))
+        }
+        Err(e) => {
+            log::warn!("smart pass failed after {ms} ms, pasting Light: {e}");
+            (cleanup::finish(&light, ctx), Some(ms))
+        }
     }
 }
 
@@ -377,7 +401,8 @@ impl Engine {
         self.refresh_status();
         let shared = self.shared.clone();
         let app = self.focused_app.clone();
-        let light = s.cleanup == "light";
+        let light = s.cleanup != "off";
+        let smart = s.cleanup == "smart";
         let dictionary = self.shared.dictionary.read().unwrap().clone();
         std::thread::spawn(move || {
             let t = Instant::now();
@@ -385,8 +410,9 @@ impl Engine {
             let raw = if audio::peak(&audio) < SILENCE_PEAK { Ok(String::new()) } else { shared.transcribe(&audio) };
             let took = t.elapsed();
             let result = raw.map(|raw| {
-                let text = cleanup::clean(&raw, &cleanup::Context { app: app.clone(), light, dictionary });
-                Transcript { raw, text, app, audio_secs: secs, took }
+                let ctx = cleanup::Context { app: app.clone(), light, dictionary };
+                let (text, smart_ms) = if smart { smart_clean(&raw, &ctx) } else { (cleanup::clean(&raw, &ctx), None) };
+                Transcript { raw, text, app, audio_secs: secs, took, smart_ms }
             });
             let _ = shared.tx.send(Msg::Transcribed(result));
         });
@@ -432,6 +458,7 @@ impl Engine {
                         app: t.app.clone(),
                         audio_secs: t.audio_secs,
                         asr_ms: took_ms,
+                        smart_ms: t.smart_ms,
                         cleaned: (t.text != t.raw).then(|| t.text.clone()),
                         raw: t.raw.clone(),
                     });

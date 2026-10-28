@@ -1,8 +1,8 @@
 //! Transcript cleanup between speech recognition and paste
 //! (docs/AI-CLEANUP-PLAN.md). "Light" is deterministic rules that run in
 //! microseconds: filler words, stutters, spoken line breaks, the user's
-//! dictionary and per-app punctuation. Self-corrections and lists are left
-//! for the AI tier.
+//! dictionary and per-app punctuation. Numbers, self-corrections and spoken
+//! lists depend on meaning, so they're left for Smart (smart.rs).
 
 use crate::dictionary::Entry;
 use regex::{Captures, Regex, RegexBuilder};
@@ -40,9 +40,17 @@ const CHATS: &[&str] = &[
 ];
 
 pub fn clean(raw: &str, ctx: &Context) -> String {
+    if !ctx.light {
+        return raw.trim().to_string();
+    }
+    finish(&light(raw, ctx), ctx)
+}
+
+/// The Light rules, before the per-app touches. Smart cleanup runs on this.
+pub fn light(raw: &str, ctx: &Context) -> String {
     let text = raw.trim();
-    if !ctx.light || text.is_empty() {
-        return text.to_string();
+    if text.is_empty() {
+        return String::new();
     }
     let text = spoken_breaks(text);
     let text = text
@@ -52,8 +60,22 @@ pub fn clean(raw: &str, ctx: &Context) -> String {
         .join("\n");
     let text = spoken_quotes(&text);
     let text = key_combos(&text);
-    let text = apply_dictionary(&text, &ctx.dictionary);
+    apply_dictionary(&text, &ctx.dictionary)
+}
+
+/// The last step for both tiers: dictionary spellings (again, in case Smart
+/// changed one) and the app's punctuation habits.
+pub fn finish(text: &str, ctx: &Context) -> String {
+    let text = apply_dictionary(text.trim(), &ctx.dictionary);
     fit_app(text.trim(), ctx.app.as_deref())
+}
+
+pub fn is_terminal(exe: &str) -> bool {
+    TERMINALS.contains(&exe)
+}
+
+pub fn is_chat(exe: &str) -> bool {
+    CHATS.contains(&exe)
 }
 
 fn core(word: &str) -> &str {
@@ -383,17 +405,23 @@ fn show(s: &str) -> String {
     s.replace('\n', "\\n")
 }
 
-/// `sotto --bench-cleanup cases.jsonl`: runs every case through Light
-/// cleanup with the user's saved dictionary plus any in the case, and prints
-/// failures, changes and timing.
-pub fn bench(path: &str) {
+/// `sotto --bench-cleanup cases.jsonl [--smart]`: runs every case through
+/// Light cleanup (or Smart, which calls the API for cases with a cue) with
+/// the user's saved dictionary plus any in the case, and prints failures,
+/// changes and timing.
+pub fn bench(path: &str, smart: bool) {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => return println!("can't read {path}: {e}"),
     };
+    if smart && !crate::secret::is_set() {
+        return println!("Smart needs an API key: save one in Settings, or set ANTHROPIC_API_KEY");
+    }
     let saved = crate::dictionary::load();
     let (mut total, mut graded, mut passed, mut changed) = (0, 0, 0, 0);
     let mut times = Vec::new();
+    let (mut calls, mut fallbacks) = (0, 0);
+    let mut call_ms = Vec::new();
     for (i, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
@@ -410,8 +438,23 @@ pub fn bench(path: &str) {
         dictionary.extend(case.dictionary.iter().map(|(w, a)| Entry { word: w.clone(), aliases: a.clone(), learned: false }));
         let ctx = Context { app: case.app.clone(), light: true, dictionary };
         let t = Instant::now();
-        let out = clean(&case.raw, &ctx);
+        let mut out = clean(&case.raw, &ctx);
         times.push(t.elapsed().as_micros());
+        if smart {
+            let light_text = light(&case.raw, &ctx);
+            if crate::smart::needs(&light_text) {
+                calls += 1;
+                let t = Instant::now();
+                match crate::smart::fix(&light_text, ctx.app.as_deref(), &ctx.dictionary) {
+                    Ok(fixed) => out = finish(&fixed, &ctx),
+                    Err(e) => {
+                        fallbacks += 1;
+                        println!("#{} smart failed, using Light: {e}", i + 1);
+                    }
+                }
+                call_ms.push(t.elapsed().as_millis());
+            }
+        }
 
         let label = format!(
             "#{} {}{}",
@@ -448,7 +491,18 @@ pub fn bench(path: &str) {
     let max = times.last().copied().unwrap_or(0);
     println!();
     println!("{total} cases: {passed}/{graded} graded cases pass, {changed} changed by cleanup");
-    println!("time per case: p50 {p50} us, max {max} us");
+    println!("Light time per case: p50 {p50} us, max {max} us");
+    if smart {
+        call_ms.sort_unstable();
+        let at = |q: usize| call_ms.get((call_ms.len() * q / 100).min(call_ms.len().saturating_sub(1))).copied().unwrap_or(0);
+        println!(
+            "Smart: {calls} of {total} cases called {}, {fallbacks} fell back to Light; p50 {} ms, p90 {} ms, max {} ms",
+            crate::smart::MODEL,
+            at(50),
+            at(90),
+            call_ms.last().copied().unwrap_or(0)
+        );
+    }
 }
 
 #[cfg(test)]

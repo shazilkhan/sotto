@@ -18,7 +18,7 @@ type Settings = {
   pillMode: "always" | "talking" | "never";
   pillX: number | null;
   pillY: number | null;
-  cleanup: "off" | "light";
+  cleanup: "off" | "light" | "smart";
 };
 
 type Entry = { word: string; aliases: string[]; learned?: boolean };
@@ -39,6 +39,7 @@ type UiState = {
   transcriptCount: number;
   hotkeys: [string, string][];
   version: string;
+  smartKey: boolean;
 };
 
 type Toggle =
@@ -67,6 +68,8 @@ const CLEAN_NOTES = {
   off: "Pasted exactly as heard.",
   light:
     "Removes um, uh and ah, drops repeated words and phrases, fixes names from your Dictionary, writes spoken shortcuts as Ctrl+C, and understands \"new line\", \"bullet point\" and \"quote … end quote\". Instant, and it runs on this PC.",
+  smart:
+    "Everything Light does, plus an AI pass for what depends on meaning: numbers (\"fifty signups\" becomes 50 signups), corrections (\"Tuesday, no wait, Wednesday\"), counted lists, and email and web addresses. Only the text goes to Anthropic, never audio, and only when it has one of those. If a reply takes more than 3 seconds, the Light text is pasted.",
 };
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) {
@@ -287,8 +290,8 @@ function renderDictionary(s: UiState) {
     }),
   );
   $("dict-note").textContent =
-    s.settings.cleanup === "light"
-      ? "Light cleanup swaps the \"heard as\" spellings as you dictate, and fixes the word's capitals. Words marked learned came from your own corrections."
+    s.settings.cleanup !== "off"
+      ? "Cleanup swaps the \"heard as\" spellings as you dictate, and fixes the word's capitals. Words marked learned came from your own fixes, like a name you retyped or a number you changed to digits."
       : "Text cleanup is off, so these aren't applied. Turn on Light in Settings.";
 }
 
@@ -333,6 +336,9 @@ function renderSettings(s: UiState) {
     b.setAttribute("aria-pressed", String(b.dataset.clean === st.cleanup));
   }
   $("clean-note").textContent = CLEAN_NOTES[st.cleanup] ?? "";
+  $("smart-key").hidden = st.cleanup !== "smart";
+  $("key-entry").hidden = s.smartKey;
+  $("key-saved").hidden = !s.smartKey;
   $("days-row").hidden = !st.keepTranscripts;
   $<HTMLSelectElement>("days").value = String(st.historyDays);
   const n = s.transcriptCount;
@@ -451,6 +457,48 @@ for (const t of all<HTMLInputElement>("[data-toggle]")) t.onchange = () => save(
 $("mic").onchange = () => save({ mic: $<HTMLSelectElement>("mic").value || null });
 $("keep").onchange = () => save({ keepModelMins: Number($<HTMLSelectElement>("keep").value) });
 $("days").onchange = () => save({ historyDays: Number($<HTMLSelectElement>("days").value) });
+function keyNote(text: string, bad = false) {
+  const note = $("key-note");
+  note.hidden = !text;
+  note.textContent = text;
+  note.classList.toggle("bad", bad);
+}
+
+async function testKey() {
+  keyNote("Testing…");
+  try {
+    const r = await invoke<{ ms: number; text: string }>("test_smart");
+    keyNote(`Works. Took ${(r.ms / 1000).toFixed(1)} s and wrote: ${r.text}`);
+  } catch (e) {
+    keyNote(`That didn't work: ${e}`, true);
+  }
+}
+
+async function saveKey() {
+  const input = $<HTMLInputElement>("key-input");
+  const key = input.value.trim();
+  if (!key) return input.focus();
+  try {
+    await invoke("save_api_key", { key });
+  } catch (e) {
+    return keyNote(`Couldn't save the key: ${e}`, true);
+  }
+  input.value = "";
+  await refresh();
+  await testKey();
+}
+
+$("key-save").onclick = saveKey;
+$("key-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") saveKey();
+});
+$("key-get").onclick = () => invoke("open_key_page");
+$("key-test").onclick = testKey;
+$("key-remove").onclick = async () => {
+  await invoke("remove_api_key");
+  keyNote("");
+  await refresh();
+};
 $("pill-reset").onclick = () => invoke("reset_pill").then(refresh);
 $("tx-show").onclick = () => invoke("show_transcripts");
 $("tx-clear").onclick = async () => {

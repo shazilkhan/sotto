@@ -33,7 +33,8 @@ pub struct Settings {
     /// centre of the primary screen. Owned by the pill; the UI never sets it.
     pub pill_x: Option<i32>,
     pub pill_y: Option<i32>,
-    /// "off" or "light" ("smart" later).
+    /// "off", "light", or "smart" (Light plus an AI pass; needs an API key,
+    /// see smart.rs).
     pub cleanup: String,
 }
 

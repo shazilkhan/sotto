@@ -215,12 +215,28 @@
                   <span class="seg" role="group" aria-label="Cleanup mode">
                     <button type="button" data-clean="off">Off</button>
                     <button type="button" data-clean="light">Light</button>
-                    <button type="button" disabled>Smart <span class="mono soon">soon</span></button>
+                    <button type="button" data-clean="smart">Smart</button>
                   </span>
                 </div>
                 <p class="muted note" id="clean-note"></p>
+                <div id="smart-key" hidden>
+                  <div class="row spaced wrap">
+                    <span class="name">Anthropic API key<small>Smart uses Claude Haiku with your own key. It's kept in Windows Credential Manager, not in Sotto's files.</small></span>
+                    <span class="inline gap20" id="key-entry">
+                      <input type="password" class="keyin" id="key-input" placeholder="sk-ant-…" autocomplete="off" spellcheck="false" aria-label="Anthropic API key" />
+                      <button type="button" class="tbtn" id="key-save">Save</button>
+                      <button type="button" class="tbtn" id="key-get">Get a key</button>
+                    </span>
+                    <span class="inline gap20" id="key-saved" hidden>
+                      <span class="label">Key saved</span>
+                      <button type="button" class="tbtn" id="key-test">Test</button>
+                      <button type="button" class="tbtn danger" id="key-remove">Remove</button>
+                    </span>
+                  </div>
+                  <p class="muted small note" id="key-note" hidden></p>
+                </div>
                 <label class="row spaced">
-                  <span class="name">Learn from my corrections<small>When you fix a name right after it's pasted, Sotto adds it to your Dictionary. It reads only that text box, once, and never password fields.</small></span>
+                  <span class="name">Learn from my corrections<small>When you fix a name right after it's pasted (Neve to Niamh, or Nifty fifty to Nifty 50), Sotto adds it to your Dictionary. It reads only that text box, once, and never password fields.</small></span>
                   <input type="checkbox" class="sw" data-toggle="learnCorrections" />
                 </label>
               </div>

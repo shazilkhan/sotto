@@ -2,9 +2,11 @@
 
 Push-to-talk dictation for Windows that runs entirely on your PC. Hold a
 hotkey, speak, let go, and the text is pasted wherever your cursor is. No
-account, no subscription, and no audio leaves the machine.
+account, no subscription, and no audio leaves the machine. An optional
+Smart mode sends the text, never audio, to Claude Haiku for fixes that
+depend on meaning.
 
-Status: early (v0.4). Works on Windows 10/11 x64. English plus 24 European
+Status: early (v0.5). Works on Windows 10/11 x64. English plus 24 European
 languages (whatever Parakeet v3 supports).
 
 ## Why it's light
@@ -53,8 +55,10 @@ The app window has four pages:
   speech recognition sometimes writes instead.
   - When you fix a name right after it's pasted ("Neve" to "Niamh"),
     Sotto learns it and the pill says so.
-  - It only learns capitalised names and terms that sound like what was
-    heard, so grammar edits and changed meanings are ignored.
+  - It also learns a number inside a name ("Nifty fifty Solutions" retyped
+    as "Nifty 50 Solutions") and a name's capitals ("github" to "GitHub").
+  - It only learns names and terms that sound like what was heard, so
+    grammar edits, emphasis and changed meanings are ignored.
 - **Settings:**
   - shortcut (Ctrl+Win, Right Ctrl, Right Alt, Ctrl+Alt, Ctrl+Shift)
   - when to show the pill
@@ -63,7 +67,7 @@ The app window has four pages:
     mic)
   - sounds, start with Windows, trailing space
   - how long to keep the model loaded
-  - text cleanup
+  - text cleanup (Off, Light or Smart, plus the API key for Smart)
   - learning from corrections
   - history (on this PC only; keep 7 days, 30 days, a year or forever)
 
@@ -86,11 +90,32 @@ microseconds:
 - terminals get bare commands ("git status"), and one-line chat messages
   lose the final full stop
 
-It never rewords. On the seed cases it passes 29 of 35 with no false edits.
-The rest need context, so they're for the planned AI tier (see
-`docs/AI-CLEANUP-PLAN.md`): self-corrections like "no wait", lists spoken
-without commands, and numbers ("fifty signups" should be 50, but "one of
-them" stays a word).
+It never rewords, and it makes no false edits on the seed cases. The cases
+it can't pass need context.
+
+**Smart** is opt-in. It's Light plus a pass by Claude Haiku 5.5
+(`src-tauri/src/smart.rs`) for what depends on meaning:
+- numbers: "fifty signups" becomes 50 signups, "twenty dollars" becomes
+  $20, "three thirty pm" becomes 3:30 PM, but "one of them" and "two
+  options" stay words
+- self-corrections: "Tuesday, no wait, Wednesday" becomes "Wednesday"
+- counted lists: "first …, second …, third …" becomes a numbered list
+- typed forms: "sam at example dot com" becomes sam@example.com,
+  "package dot json" becomes package.json
+
+How it behaves:
+- **Only some text is sent.** It goes out only when it has one of those
+  cues (a number word, "no wait" or "sorry", "first", "dot"). Everything
+  else pastes at Light speed and never leaves the PC.
+- **Audio never leaves the PC.** Only the text is sent, along with the
+  app's name and your Dictionary words as spelling hints.
+- **It never holds you up.** If the reply takes more than 3 seconds, or
+  looks like a rewrite or an answer, the Light text is pasted.
+- **It runs on your own Anthropic API key.** The key is kept in Windows
+  Credential Manager. At Haiku's price ($0.10 / $0.50 per million tokens), a
+  call costs about $0.0001.
+
+See `docs/AI-CLEANUP-PLAN.md`.
 
 ## How it works
 
@@ -100,6 +125,7 @@ them" stays a word).
 | Mic | `src-tauri/src/audio.rs` | cpal/WASAPI, opened on press, closed on release. Windowed-sinc resample to 16 kHz. Splits long audio at quiet points. Feeds peak levels to the pill. |
 | Speech | `src-tauri/src/engine.rs` | NVIDIA Parakeet TDT 0.6B v3 (int8 ONNX) via `transcribe-rs`, on CPU. |
 | Cleanup | `src-tauri/src/cleanup.rs` | The Light rules above, plus the `--bench-cleanup` harness. |
+| Smart | `src-tauri/src/smart.rs` | Claude Haiku 5.5 over plain HTTPS, with the cue gate, a 3 s timeout and reply checks. The key is in Windows Credential Manager (`secret.rs`). Nothing runs or connects until a dictation needs it. |
 | Pill | `src-tauri/src/pill.rs` | WS_EX_NOACTIVATE layered window, Direct2D (software) + DirectWrite, its own thread. |
 | Learning | `src-tauri/src/learn.rs` | After a paste, UI Automation re-reads that one field once (never password fields) and aligns it with what was pasted. The client exists only for that check. |
 | History | `src-tauri/src/transcripts.rs` | One JSON line per dictation, with retention and per-item delete. |
@@ -110,6 +136,7 @@ them" stays a word).
 
 Data lives in two places:
 - `%APPDATA%\Sotto\`: settings and dictionary.
+- Windows Credential Manager: the API key for Smart, if you saved one.
 - `%LOCALAPPDATA%\Sotto\`: the model, `sotto.log`, history
   (`transcripts.jsonl`), and weekly stats (counts only).
 
@@ -163,10 +190,14 @@ from the [Geist release](https://github.com/vercel/geist-font/releases).
 - **Measure:** `sotto.exe --bench-cleanup eval/cases.jsonl` runs the
   hand-written cases and prints every failure. Point it at
   `transcripts.jsonl` to see what cleanup changes in real dictations.
+- **Smart:** add `--smart` to send the cases that have a cue to the API
+  (the saved key, or `ANTHROPIC_API_KEY`). It also prints p50 and p90
+  latency.
 
 ## Roadmap
 
-1. AI cleanup tier: "no wait, Tuesday" corrections, lists, optional tone.
+1. More Smart options: an OpenAI-compatible endpoint (Groq, OpenRouter, a
+   local Ollama on your own GPU), and optional tone.
 2. "Only hears you": echo cancellation against system audio plus voice
    enrollment, so other voices and speaker output are ignored even without
    muting.

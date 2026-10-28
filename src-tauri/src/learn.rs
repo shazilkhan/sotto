@@ -8,6 +8,7 @@
 //! Automation calls run on their own thread, so a slow or hung app can't
 //! stall dictation.
 
+use std::ops::Range;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -144,8 +145,129 @@ fn sounds_alike(heard: &str, word: &str) -> bool {
     levenshtein(&a, &b) * 10 <= longest * 8
 }
 
-/// Words the user replaced in place: one or two pasted words swapped for a
-/// single term, inside a sentence that otherwise survived intact.
+const SMALL_NUMBERS: &[&str] = &[
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+    "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+];
+const TENS: &[&str] = &["twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+
+/// "fifty" -> 50, "twenty-one" -> 21, "five hundred" -> 500.
+fn words_to_number(words: &[&str]) -> Option<u64> {
+    let (mut total, mut current, mut any) = (0u64, 0u64, false);
+    for w in words.iter().flat_map(|w| w.split('-')) {
+        let w = w.to_lowercase();
+        if let Some(n) = SMALL_NUMBERS.iter().position(|s| *s == w) {
+            current += n as u64;
+        } else if let Some(n) = TENS.iter().position(|s| *s == w) {
+            current += (n as u64 + 2) * 10;
+        } else {
+            match w.as_str() {
+                "hundred" => current = current.max(1) * 100,
+                "thousand" | "million" => {
+                    let scale = if w == "thousand" { 1_000 } else { 1_000_000 };
+                    total += current.max(1) * scale;
+                    current = 0;
+                }
+                "and" if any => continue,
+                _ => return None,
+            }
+        }
+        any = true;
+    }
+    any.then_some(total + current)
+}
+
+/// "50" or "2,000" as a number.
+fn digits_value(w: &str) -> Option<u64> {
+    let d: String = w.chars().filter(|c| *c != ',').collect();
+    if d.is_empty() || !d.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    d.parse().ok()
+}
+
+/// A run of pasted words and what the user typed in its place. `left` and
+/// `right` index the matched pairs on either side, when there is one.
+struct Gap {
+    heard: Range<usize>,
+    fixed: Range<usize>,
+    left: Option<usize>,
+    right: Option<usize>,
+}
+
+/// A spoken number the user rewrote as digits inside a name ("Nifty fifty
+/// Solutions" -> "Nifty 50 Solutions", "Windows eleven" -> "Windows 11").
+/// The whole name is learned, so "fifty" elsewhere is left alone. A number
+/// with no name around it is just style, and Smart handles that.
+fn number_fix(p: &[&str], f: &[&str], pairs: &[(usize, usize)], gap: &Gap) -> Option<(String, String)> {
+    if gap.heard.len() > 3 || gap.fixed.len() != 1 {
+        return None;
+    }
+    let value = words_to_number(&p[gap.heard.clone()])?;
+    if digits_value(f[gap.fixed.start])? != value {
+        return None;
+    }
+    // Take in up to three name-like words on each side.
+    let (mut ps, mut fs) = (gap.heard.start, gap.fixed.start);
+    if let Some(mut k) = gap.left {
+        for _ in 0..3 {
+            let (pk, fk) = pairs[k];
+            if pk + 1 != ps || fk + 1 != fs || !looks_like_term(f[fk]) {
+                break;
+            }
+            (ps, fs) = (pk, fk);
+            if k == 0 {
+                break;
+            }
+            k -= 1;
+        }
+    }
+    let (mut pe, mut fe) = (gap.heard.end, gap.fixed.end);
+    if let Some(mut k) = gap.right {
+        for _ in 0..3 {
+            if k >= pairs.len() || pairs[k] != (pe, fe) || !looks_like_term(f[fe]) {
+                break;
+            }
+            (pe, fe) = (pe + 1, fe + 1);
+            k += 1;
+        }
+    }
+    if ps == gap.heard.start && pe == gap.heard.end {
+        return None;
+    }
+    Some((p[ps..pe].join(" "), f[fs..fe].join(" ")))
+}
+
+/// A misheard name or term swapped for the right one ("Neve" -> "Niamh",
+/// "supa base" -> "Supabase").
+fn term_fix(p: &[&str], f: &[&str], gap: &Gap) -> Option<(String, String)> {
+    let heard = &p[gap.heard.clone()];
+    if heard.len() > 2 || gap.fixed.len() != 1 {
+        return None;
+    }
+    let word = f[gap.fixed.start];
+    let heard_text = heard.join(" ");
+    let ok = word.chars().count() >= 3
+        && looks_like_term(word)
+        && word.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '\'')
+        && !heard_text.eq_ignore_ascii_case(word)
+        && sounds_alike(&heard_text, word)
+        && !(heard.len() == 1 && COMMON.contains(&heard[0].to_lowercase().as_str()));
+    ok.then(|| (heard_text, word.to_string()))
+}
+
+/// The same word with its capitals fixed into a mixed-case name ("github"
+/// -> "GitHub", "macos" -> "macOS"). All-caps edits are skipped: "VERY" is
+/// usually emphasis, not a spelling.
+fn case_fix(heard: &str, word: &str) -> Option<(String, String)> {
+    let inner_cap = word.chars().skip(1).any(char::is_uppercase) && word.chars().any(char::is_lowercase);
+    let ok = heard != word && inner_cap && word.chars().count() >= 3 && !COMMON.contains(&heard.to_lowercase().as_str());
+    ok.then(|| (heard.to_string(), word.to_string()))
+}
+
+/// What the user fixed in place, inside a sentence that otherwise survived
+/// intact: a misheard name, a spoken number inside a name, or a name's
+/// capitals.
 pub fn find_corrections(pasted: &str, field: &str) -> Vec<(String, String)> {
     let p: Vec<&str> = pasted.split_whitespace().map(core).filter(|w| !w.is_empty()).collect();
     let f_all: Vec<&str> = field.split_whitespace().map(core).filter(|w| !w.is_empty()).collect();
@@ -182,29 +304,29 @@ pub fn find_corrections(pasted: &str, field: &str) -> Vec<(String, String)> {
         return vec![];
     }
 
-    let mut found = Vec::new();
-    for w in pairs.windows(2) {
-        let ((pi, fj), (pi2, fj2)) = (w[0], w[1]);
-        let heard = &p[pi + 1..pi2];
-        let fixed = &f[fj + 1..fj2];
-        if heard.is_empty() || heard.len() > 2 || fixed.len() != 1 {
-            continue;
-        }
-        let word = fixed[0];
-        let heard_text = heard.join(" ");
-        let ok = word.chars().count() >= 3
-            && looks_like_term(word)
-            && word.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '\'')
-            && !heard_text.eq_ignore_ascii_case(word)
-            && sounds_alike(&heard_text, word)
-            && !(heard.len() == 1 && COMMON.contains(&heard[0].to_lowercase().as_str()));
-        if ok {
-            found.push((heard_text, word.to_string()));
-        }
-        if found.len() == MAX_LEARN_PER_PASTE {
-            break;
-        }
+    // The runs between matched words. At either end of the paste the field
+    // may go on with other text, so only one typed word is considered there.
+    let mut gaps = Vec::new();
+    let (first, last) = (pairs[0], pairs[pairs.len() - 1]);
+    if first.0 > 0 && first.1 > 0 {
+        gaps.push(Gap { heard: 0..first.0, fixed: first.1 - 1..first.1, left: None, right: Some(0) });
     }
+    for (k, w) in pairs.windows(2).enumerate() {
+        let ((pi, fj), (pi2, fj2)) = (w[0], w[1]);
+        gaps.push(Gap { heard: pi + 1..pi2, fixed: fj + 1..fj2, left: Some(k), right: Some(k + 1) });
+    }
+    if last.0 + 1 < n && last.1 + 1 < m {
+        gaps.push(Gap { heard: last.0 + 1..n, fixed: last.1 + 1..last.1 + 2, left: Some(pairs.len() - 1), right: None });
+    }
+
+    let mut found: Vec<(String, String)> = gaps
+        .iter()
+        .filter(|g| !g.heard.is_empty() && !g.fixed.is_empty())
+        .filter_map(|g| number_fix(&p, f, &pairs, g).or_else(|| term_fix(&p, f, g)))
+        .collect();
+    found.extend(pairs.iter().filter_map(|&(pi, fj)| case_fix(p[pi], f[fj])));
+    found.dedup();
+    found.truncate(MAX_LEARN_PER_PASTE);
     found
 }
 
@@ -229,6 +351,42 @@ mod tests {
         let field = "Earlier notes here. Then I deployed it to Tauri builds today. More text after.";
         let got = find_corrections("Then I deployed it to Tory builds today.", field);
         assert_eq!(got, vec![("Tory".to_string(), "Tauri".to_string())]);
+    }
+
+    #[test]
+    fn learns_a_number_inside_a_name() {
+        let got = find_corrections("I work at Nifty fifty Solutions now.", "I work at Nifty 50 Solutions now.");
+        assert_eq!(got, vec![("Nifty fifty Solutions".to_string(), "Nifty 50 Solutions".to_string())]);
+        let got = find_corrections("We finally moved to Windows eleven.", "We finally moved to Windows 11. Next line.");
+        assert_eq!(got, vec![("Windows eleven".to_string(), "Windows 11".to_string())]);
+    }
+
+    #[test]
+    fn a_plain_number_edit_is_not_learned() {
+        assert!(find_corrections("We have fifty signups today.", "We have 50 signups today.").is_empty());
+    }
+
+    #[test]
+    fn learns_a_fix_at_either_end() {
+        let got = find_corrections("Neve, can you call me back?", "Niamh, can you call me back?");
+        assert_eq!(got, vec![("Neve".to_string(), "Niamh".to_string())]);
+    }
+
+    #[test]
+    fn learns_mixed_case_names_but_not_emphasis() {
+        let got = find_corrections("I pushed it to github this morning.", "I pushed it to GitHub this morning.");
+        assert_eq!(got, vec![("github".to_string(), "GitHub".to_string())]);
+        assert!(find_corrections("This is very important for us.", "This is VERY important for US.").is_empty());
+    }
+
+    #[test]
+    fn number_words() {
+        assert_eq!(words_to_number(&["fifty"]), Some(50));
+        assert_eq!(words_to_number(&["twenty-one"]), Some(21));
+        assert_eq!(words_to_number(&["five", "hundred"]), Some(500));
+        assert_eq!(words_to_number(&["two", "thousand", "and", "five"]), Some(2005));
+        assert_eq!(words_to_number(&["lots"]), None);
+        assert_eq!(digits_value("2,000"), Some(2000));
     }
 
     #[test]

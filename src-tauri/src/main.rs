@@ -13,7 +13,9 @@ mod logger;
 mod model;
 mod mute;
 mod pill;
+mod secret;
 mod settings;
+mod smart;
 mod sounds;
 mod stats;
 mod transcripts;
@@ -46,7 +48,11 @@ struct UiState {
     transcript_count: usize,
     hotkeys: Vec<(&'static str, &'static str)>,
     version: &'static str,
+    /// An API key is saved for Smart cleanup (the key itself never goes to the UI).
+    smart_key: bool,
 }
+
+const KEY_PAGE: &str = "https://platform.claude.com/settings/keys";
 
 pub fn emit_state(app: &AppHandle) {
     let _ = app.emit("state-changed", ());
@@ -242,7 +248,47 @@ async fn get_state(shared: State<'_, Arc<Shared>>) -> Result<UiState, String> {
         transcript_count: transcripts::count(),
         hotkeys: hotkey::PRESETS.iter().map(|p| (p.0, p.1)).collect(),
         version: env!("CARGO_PKG_VERSION"),
+        smart_key: secret::is_set(),
     })
+}
+
+#[tauri::command]
+async fn save_api_key(app: AppHandle, key: String) -> Result<(), String> {
+    secret::set(&key)?;
+    emit_state(&app);
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_api_key(app: AppHandle) -> Result<(), String> {
+    secret::delete();
+    emit_state(&app);
+    Ok(())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SmartTest {
+    ms: u64,
+    text: String,
+}
+
+/// Runs one sample through Smart so Settings can show it working and how long it takes.
+#[tauri::command]
+async fn test_smart() -> Result<SmartTest, String> {
+    let sample = "Let's meet on Tuesday, no wait, Wednesday at three thirty. We have fifty signups.";
+    tauri::async_runtime::spawn_blocking(move || {
+        let t = Instant::now();
+        let text = smart::fix(sample, None, &[])?;
+        Ok(SmartTest { ms: t.elapsed().as_millis() as u64, text })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn open_key_page() -> Result<(), String> {
+    std::process::Command::new("explorer").arg(KEY_PAGE).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -374,12 +420,11 @@ async fn copy_text(text: String) -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    if let [_, flag, file] = args.as_slice() {
-        match flag.as_str() {
-            "--bench" => return engine::bench(file),
-            "--bench-cleanup" => return cleanup::bench(file),
-            _ => {}
-        }
+    match args.as_slice() {
+        [_, flag, file] if flag == "--bench" => return engine::bench(file),
+        [_, flag, file] if flag == "--bench-cleanup" => return cleanup::bench(file, false),
+        [_, flag, file, opt] if flag == "--bench-cleanup" && opt == "--smart" => return cleanup::bench(file, true),
+        _ => {}
     }
     logger::init();
     log::info!("Sotto {} starting", env!("CARGO_PKG_VERSION"));
@@ -406,7 +451,11 @@ fn main() {
             download_model,
             clear_transcripts,
             show_transcripts,
-            copy_text
+            copy_text,
+            save_api_key,
+            remove_api_key,
+            test_smart,
+            open_key_page
         ])
         .setup(|app| {
             let handle = app.handle().clone();

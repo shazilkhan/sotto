@@ -1,10 +1,20 @@
 # AI cleanup pass: plan
 
-Status: phase 0 built 2026-10-28 (transcript log, `--bench-cleanup`,
-`eval/cases.jsonl`; baseline 9/25, exactly the leave-alone cases). Most of
-phase 1 is in as of v0.2: fillers, stutters, spoken breaks, the dictionary
-and terminal/chat punctuation pass 19/25 with no false edits. Immediate
-phrase repeats are still to do. Corrections and lists wait for the AI tier.
+Status:
+- Phase 0 built 2026-10-28: transcript log, `--bench-cleanup`,
+  `eval/cases.jsonl`. Baseline 9/25, exactly the leave-alone cases.
+- Phase 1 (Light) is in. As of v0.4 it covers fillers, stutters, repeated
+  phrases, spoken shortcuts, quotes, bullets and breaks, the dictionary, and
+  terminal/chat punctuation, with no false edits.
+- Phase 2 is in as of v0.5, Anthropic client only (`src-tauri/src/smart.rs`):
+  - Claude Haiku 5.5 with thinking off and effort low. A 3 s timeout falls
+    back to Light.
+  - The key is kept in Windows Credential Manager.
+  - A cue gate: only text with a number word, a correction cue, a counted
+    list or a spoken symbol is sent.
+  - The case set grew to 46, with 11 Smart-only cases.
+  - Not built yet: the OpenAI-compatible client and the local model.
+  - Smart has not been benchmarked against the live API yet.
 
 ## Goal
 
@@ -24,8 +34,9 @@ paraphrases.
 ## Rules that don't bend
 
 1. **Never slower than today, never stuck.** The AI step has a hard timeout
-   (1.5 s to start). If it's late or fails, the rule-cleaned text is pasted.
-   The user always gets text.
+   (3 s in v0.5; the network round trip alone measured about 0.4 s, so the
+   planned 1.5 s left too little room). If it's late or fails, the
+   rule-cleaned text is pasted. The user always gets text.
 2. **Zero idle cost stays.** No AI process or connection while idle. Local
    models start on hotkey press (in parallel with speech, like Parakeet) and
    are killed when idle.
@@ -75,6 +86,21 @@ One short request per dictation: about 300 tokens in, about 100 out.
 - **Skip the AI** under 6 words. There's nothing to clean, and it saves the
   round trip.
 
+What v0.5 actually does differs in places:
+- **Gate:** the skip is a cue gate, not a word count. Text goes out only if
+  it has a number word, a correction cue ("no wait", "I mean", "sorry"), a
+  list word ("first", "second") or a spoken symbol ("dot", "slash").
+  Everything else pastes at Light speed.
+- **Prompt and reply:** the prompt has worked examples (different sentences
+  from the eval set), and the reply comes back inside `<fixed>` tags.
+- **Checks:** empty, more than twice as long, or under 40% of the words all
+  fall back to Light.
+- **Memory:** learning from corrections now also keeps a number inside a
+  name. "Nifty fifty Solutions" retyped as "Nifty 50 Solutions" becomes a
+  Dictionary entry, and so do mixed-case fixes like "github" → "GitHub". The
+  dictionary goes to the model as spelling hints and is applied again after
+  it replies.
+
 ## Providers
 
 Two clients cover everything:
@@ -91,9 +117,9 @@ Two clients cover everything:
    - Prompt caching likely won't apply. The prompt is shorter than the
      minimum cacheable prefix.
 
-The default model is picked from the bake-off (phase 3). API keys are
-encrypted with Windows DPAPI (tied to the Windows user account). They're
-kept out of settings.json and never logged.
+The default model is picked from the bake-off (phase 3). API keys are kept
+in Windows Credential Manager, which encrypts them for the Windows user.
+They're kept out of settings.json and never logged.
 
 ### Local model (phase 4)
 

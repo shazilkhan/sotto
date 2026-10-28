@@ -21,6 +21,9 @@ pub struct Entry {
     pub app: Option<String>,
     pub audio_secs: f32,
     pub asr_ms: u64,
+    /// Time spent on the Smart pass, when it ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smart_ms: Option<u64>,
     pub raw: String,
     /// Present only when cleanup changed the text.
     #[serde(default, skip_serializing_if = "Option::is_none")]

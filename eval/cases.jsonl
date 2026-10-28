@@ -3,10 +3,10 @@
 {"note": "filler hmm", "raw": "Hmm, let me check with the team and get back to you.", "expected": "Let me check with the team and get back to you."}
 {"note": "stutter", "raw": "I I think the the build is broken.", "expected": "I think the build is broken."}
 {"note": "repeated phrase", "raw": "We need to, we need to fix the login first.", "expected": "We need to fix the login first."}
-{"note": "correction no wait", "raw": "Let's meet on Tuesday, no wait, Wednesday at three.", "expected": "Let's meet on Wednesday at three."}
-{"note": "correction I mean", "raw": "Send it to Sam, I mean Priya, before lunch.", "expected": "Send it to Priya before lunch."}
-{"note": "correction scratch that", "raw": "The price is $500. Scratch that, it's $750.", "expected": "The price is $750."}
-{"note": "dictated list", "raw": "I need three things: first, the logo files, second, the hosting login, and third, the copy for the about page.", "expected": "I need three things:\n1. The logo files\n2. The hosting login\n3. The copy for the about page"}
+{"note": "correction no wait (Smart)", "raw": "Let's meet on Tuesday, no wait, Wednesday at three.", "expected": "Let's meet on Wednesday at 3."}
+{"note": "correction I mean (Smart)", "raw": "Send it to Sam, I mean Priya, before lunch.", "expected": "Send it to Priya before lunch."}
+{"note": "correction scratch that (Smart)", "raw": "The price is $500. Scratch that, it's $750.", "expected": "The price is $750."}
+{"note": "dictated list (Smart)", "raw": "I need three things: first, the logo files, second, the hosting login, and third, the copy for the about page.", "expected": "I need three things:\n1. The logo files\n2. The hosting login\n3. The copy for the about page"}
 {"note": "spoken new paragraph", "raw": "Thanks for the update. New paragraph. I'll send the invoice tomorrow.", "expected": "Thanks for the update.\n\nI'll send the invoice tomorrow."}
 {"note": "spoken new line", "raw": "Milk, new line, eggs, new line, bread.", "expected": "Milk\nEggs\nBread"}
 {"note": "dictionary alias", "raw": "I pushed the fix to supa base this morning.", "dictionary": {"Supabase": ["supa base", "super base"]}, "expected": "I pushed the fix to Supabase this morning."}
@@ -32,4 +32,15 @@
 {"note": "quote unquote stays", "raw": "The so-called quote unquote experts.", "expected": "The so-called quote unquote experts."}
 {"note": "spoken bullets", "raw": "Shopping list. Bullet point eggs. Bullet point milk. Next bullet bread.", "expected": "Shopping list.\n- Eggs\n- Milk\n- Bread"}
 {"note": "bullet as a word stays", "raw": "Add a bullet point here.", "expected": "Add a bullet point here."}
-{"note": "spelled-out number in context (AI tier)", "raw": "We have fifty signups and one of them is from Lisbon.", "expected": "We have 50 signups and one of them is from Lisbon."}
+{"note": "number in context (Smart)", "raw": "We have fifty signups and one of them is from Lisbon.", "expected": "We have 50 signups and one of them is from Lisbon."}
+{"note": "money and percent (Smart)", "raw": "The plan is twenty dollars a month with a ten percent discount.", "expected": "The plan is $20 a month with a 10% discount."}
+{"note": "time (Smart)", "raw": "The call is at three thirty pm tomorrow.", "expected": "The call is at 3:30 PM tomorrow."}
+{"note": "version (Smart)", "raw": "Upgrade to version two point one before Friday.", "expected": "Upgrade to version 2.1 before Friday."}
+{"note": "small count stays a word (Smart)", "raw": "We have two options and one of them is risky.", "expected": "We have two options and one of them is risky."}
+{"note": "email address (Smart)", "raw": "Send it to priya at example dot com.", "expected": "Send it to priya@example.com."}
+{"note": "file name (Smart)", "raw": "Check the package dot json file.", "expected": "Check the package.json file."}
+{"note": "correction sorry (Smart)", "raw": "Send it to Maria, sorry, to Sam.", "expected": "Send it to Sam."}
+{"note": "sorry is not a correction (Smart)", "raw": "Sorry for the late reply, I was traveling.", "expected": "Sorry for the late reply, I was traveling."}
+{"note": "first is not a list (Smart)", "raw": "First of all, thanks for coming today.", "expected": "First of all, thanks for coming today."}
+{"note": "question with a number is not answered (Smart)", "raw": "Can you list five ways to grow a newsletter?", "expected": "Can you list five ways to grow a newsletter?"}
+{"note": "name with a number, from the dictionary", "raw": "I'm calling from nifty fifty solutions.", "dictionary": {"Nifty 50 Solutions": ["Nifty fifty Solutions"]}, "expected": "I'm calling from Nifty 50 Solutions."}

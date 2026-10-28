@@ -506,6 +506,31 @@ h2 {
   min-width: 180px;
 }
 
+.keyin {
+  width: 240px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1.5px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font: 400 14px var(--mono);
+  outline: 0;
+}
+
+.keyin:focus {
+  border-bottom-color: var(--signal);
+}
+
+.keyin::placeholder {
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.note.bad {
+  color: var(--danger);
+}
+
 .sel:focus {
   border-bottom-color: var(--signal);
 }
