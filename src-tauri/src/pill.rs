@@ -57,7 +57,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 #[derive(Debug, Clone, PartialEq)]
 pub enum PillState {
     Idle,
-    Listening { muted: u32 },
+    /// `hands_free`: locked on by a double-tap; a click or tap stops it.
+    Listening { muted: u32, hands_free: bool },
     Writing,
     /// Brief confirmation, then back to idle.
     Pasted,
@@ -68,6 +69,8 @@ pub enum PillState {
 
 pub enum PillEvent {
     OpenApp,
+    /// Click while hands-free: finish and paste.
+    StopListening,
     OpenSettings,
     CopyLast,
     ToggleTalkingOnly,
@@ -147,7 +150,7 @@ pub fn demo() {
             }
         });
         let pause = |ms| std::thread::sleep(std::time::Duration::from_millis(ms));
-        set(PillState::Listening { muted: 2 });
+        set(PillState::Listening { muted: 2, hands_free: true });
         pause(2600);
         let _ = voice.join();
         set(PillState::Writing);
@@ -177,6 +180,7 @@ const PAPER: u32 = 0xF3F2EE;
 const BLUE: u32 = 0x3236F5;
 const RED: u32 = 0xD92D20;
 const MUTED: u32 = 0xB5B4AF;
+const BLUE_LIGHT: u32 = 0x8A8DFF;
 const KEY_BG: u32 = 0x232326;
 
 struct Surface {
@@ -517,8 +521,11 @@ impl Pill {
                 let key = self.text_width(label, true) + 14.0 * s;
                 key + gap + self.text_width("hold to talk", false)
             }
-            PillState::Listening { muted } => {
+            PillState::Listening { muted, hands_free } => {
                 let mut cw = bars_w + gap + self.text_width(&time, true);
+                if *hands_free {
+                    cw += 10.0 * s + gap;
+                }
                 if *muted > 0 {
                     cw += gap * 2.0 + 1.0 * s + self.text_width(&format!("{muted} muted"), true);
                 }
@@ -553,7 +560,12 @@ impl Pill {
                 x += kw + gap;
                 self.text("hold to talk", false, x, cy, PAPER, 1.0);
             }
-            PillState::Listening { muted } => {
+            PillState::Listening { muted, hands_free } => {
+                if *hands_free {
+                    // Stop square: click the pill (or tap the shortcut) to finish.
+                    self.rrect(x, cy - 5.0 * s, x + 10.0 * s, cy + 5.0 * s, 2.0 * s, BLUE_LIGHT, 1.0);
+                    x += 10.0 * s + gap;
+                }
                 for (i, level) in self.bars.iter().enumerate() {
                     let bh = (4.0 + 12.0 * level) * s;
                     let bx = x + i as f32 * 6.0 * s;
@@ -702,6 +714,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         let (state, ..) = Pill::snapshot();
                         if matches!(state, PillState::Message { error: true, .. }) {
                             after = Some(PillEvent::OpenSettings);
+                        } else if matches!(state, PillState::Listening { hands_free: true, .. }) {
+                            after = Some(PillEvent::StopListening);
                         }
                     }
                     let _ = ReleaseCapture();

@@ -12,15 +12,18 @@ type Settings = {
   keepModelMins: number;
   startWithWindows: boolean;
   keepTranscripts: boolean;
+  historyDays: number;
+  handsFree: boolean;
+  learnCorrections: boolean;
   pillMode: "always" | "talking" | "never";
   pillX: number | null;
   pillY: number | null;
   cleanup: "off" | "light";
 };
 
-type Entry = { word: string; aliases: string[] };
+type Entry = { word: string; aliases: string[]; learned?: boolean };
 
-type HistoryItem = { text: string; raw: string; app: string; at: number; audioSecs: number; tookMs: number };
+type HistoryItem = { id: number; text: string; raw: string; app: string; at: number; audioSecs: number; tookMs: number };
 
 type UiState = {
   settings: Settings;
@@ -29,7 +32,8 @@ type UiState = {
   modelLoaded: boolean;
   modelBytes: number;
   download: { active: boolean; done: number; total: number; error: string | null };
-  history: HistoryItem[];
+  recent: HistoryItem[];
+  historyTotal: number;
   dictionary: Entry[];
   week: { words: number; wpm: number; savedMins: number };
   transcriptCount: number;
@@ -37,10 +41,18 @@ type UiState = {
   version: string;
 };
 
-type Toggle = "muteWhileDictating" | "sounds" | "startWithWindows" | "trailingSpace" | "keepTranscripts";
+type Toggle =
+  | "muteWhileDictating"
+  | "sounds"
+  | "startWithWindows"
+  | "trailingSpace"
+  | "keepTranscripts"
+  | "handsFree"
+  | "learnCorrections";
 
-const VIEWS = ["home", "dictionary", "settings"] as const;
+const VIEWS = ["home", "history", "dictionary", "settings"] as const;
 type View = (typeof VIEWS)[number];
+const PAGE = 100;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const all = <T extends HTMLElement = HTMLElement>(sel: string) => [...document.querySelectorAll<T>(sel)];
@@ -49,11 +61,12 @@ let state: UiState | null = null;
 let view: View = "home";
 let copied = "";
 let micsLoaded = false;
+const hist = { query: "", items: [] as HistoryItem[], total: 0, loadedTotal: -1 };
 
 const CLEAN_NOTES = {
   off: "Pasted exactly as heard.",
   light:
-    "Removes um and uh and stuttered words, fixes names from your Dictionary, and drops the full stop on one-line chat messages. Instant, and it runs on this PC.",
+    "Removes um, uh, ah and other hesitations, collapses stutters, fixes names from your Dictionary, and drops the full stop on one-line chat messages. Instant, and it runs on this PC.",
 };
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) {
@@ -63,12 +76,35 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return node;
 }
 
+function button(label: string, cls: string, onClick: () => void, aria?: string) {
+  const b = el("button", cls, label);
+  b.type = "button";
+  if (aria) b.setAttribute("aria-label", aria);
+  b.onclick = onClick;
+  return b;
+}
+
 function hotkeyLabel(s: UiState) {
   return s.hotkeys.find(([id]) => id === s.settings.hotkey)?.[1] ?? s.settings.hotkey;
 }
 
 function mb(bytes: number) {
   return `${Math.round(bytes / 1_000_000)} MB`;
+}
+
+function dayLabel(at: number) {
+  const d = new Date(at * 1000);
+  const today = new Date();
+  const start = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((start(today) - start(d)) / 86_400_000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  return d.toLocaleDateString([], {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+    year: d.getFullYear() === today.getFullYear() ? undefined : "numeric",
+  });
 }
 
 function setView(next: string) {
@@ -82,6 +118,7 @@ function setView(next: string) {
   }
   if (location.hash !== `#${view}`) history.replaceState(null, "", `#${view}`);
   $("view-home").parentElement!.scrollTop = 0;
+  if (view === "history") loadHistory(true);
 }
 
 async function save(patch: Partial<Settings>) {
@@ -96,7 +133,7 @@ async function save(patch: Partial<Settings>) {
 
 async function saveDictionary(entries: Entry[]) {
   try {
-    await invoke("save_dictionary", { entries });
+    await invoke("save_dictionary", { entries: entries.map((e) => ({ learned: false, ...e })) });
   } catch (e) {
     alert(`Couldn't save the dictionary: ${e}`);
   }
@@ -106,7 +143,48 @@ async function saveDictionary(entries: Entry[]) {
 async function copy(text: string, key: string) {
   await invoke("copy_text", { text });
   copied = key;
-  if (state) renderHistory(state);
+  if (state) renderRecent(state);
+  renderHistoryList();
+}
+
+/** One dictation row, shared by Home and History. */
+function row(h: HistoryItem, deletable: boolean) {
+  const li = el("li");
+  li.append(el("span", "label from", h.app || "—"), el("p", undefined, h.text));
+  const meta = el("span", "meta");
+  const when = new Date(h.at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  meta.append(el("span", "time", when));
+  const key = `${h.id}:text`;
+  meta.append(
+    button(copied === key ? "Copied" : "Copy", "tbtn" + (copied === key ? " done" : ""), () => copy(h.text, key), `Copy: ${h.text}`),
+  );
+  if (h.raw && h.raw !== h.text) {
+    const rkey = `${h.id}:raw`;
+    const orig = button(
+      copied === rkey ? "Copied" : "Original",
+      "tbtn" + (copied === rkey ? " done" : ""),
+      () => copy(h.raw, rkey),
+      "Copy what you said before cleanup",
+    );
+    meta.append(orig);
+  }
+  if (deletable) {
+    meta.append(
+      button(
+        "Delete",
+        "tbtn danger",
+        async () => {
+          await invoke("delete_history", { id: h.id });
+          hist.items = hist.items.filter((x) => x.id !== h.id);
+          hist.total = Math.max(0, hist.total - 1);
+          renderHistoryList();
+        },
+        "Delete this dictation",
+      ),
+    );
+  }
+  li.append(meta);
+  return li;
 }
 
 function renderStatus(s: UiState) {
@@ -121,42 +199,11 @@ function renderStatus(s: UiState) {
       : "Model loads when you talk";
 }
 
-function renderHistory(s: UiState) {
-  const q = $<HTMLInputElement>("search").value.trim().toLowerCase();
-  const items = s.history.filter((h) => !q || h.text.toLowerCase().includes(q) || h.app.toLowerCase().includes(q));
-  const list = $("history");
-  list.replaceChildren(
-    ...items.map((h) => {
-      const li = el("li");
-      li.append(el("span", "label app", h.app || "—"), el("p", undefined, h.text));
-      const meta = el("span", "meta");
-      const when = new Date(h.at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-      meta.append(el("span", "time", when));
-      const key = `${h.at}:text`;
-      const btn = el("button", "tbtn" + (copied === key ? " done" : ""), copied === key ? "Copied" : "Copy");
-      btn.type = "button";
-      btn.setAttribute("aria-label", `Copy: ${h.text}`);
-      btn.onclick = () => copy(h.text, key);
-      meta.append(btn);
-      if (h.raw && h.raw !== h.text) {
-        const rkey = `${h.at}:raw`;
-        const orig = el("button", "tbtn" + (copied === rkey ? " done" : ""), copied === rkey ? "Copied" : "Original");
-        orig.type = "button";
-        orig.title = "Copy what you said before cleanup";
-        orig.onclick = () => copy(h.raw, rkey);
-        meta.append(orig);
-      }
-      li.append(meta);
-      return li;
-    }),
-  );
-  $("history-empty").hidden = s.history.length > 0;
-  if (s.history.length > 0 && items.length === 0) {
-    $("history-empty").hidden = false;
-    $("history-empty").textContent = "Nothing matches that.";
-  } else {
-    $("history-empty").textContent = "Nothing yet. Hold your shortcut and talk; your last 20 dictations show up here.";
-  }
+function renderRecent(s: UiState) {
+  $("recent").replaceChildren(...s.recent.map((h) => row(h, false)));
+  $("recent-empty").hidden = s.recent.length > 0;
+  $("see-all").hidden = s.historyTotal === 0;
+  $("see-all").textContent = `See all ${s.historyTotal.toLocaleString()}`;
 }
 
 function renderHome(s: UiState) {
@@ -177,7 +224,47 @@ function renderHome(s: UiState) {
   $("stat-words").textContent = s.week.words.toLocaleString();
   $("stat-wpm").textContent = String(s.week.wpm);
   $("stat-saved").textContent = String(s.week.savedMins);
-  renderHistory(s);
+  renderRecent(s);
+}
+
+async function loadHistory(reset: boolean) {
+  const offset = reset ? 0 : hist.items.length;
+  const page = await invoke<{ items: HistoryItem[]; total: number }>("get_history", {
+    query: hist.query,
+    offset,
+    limit: PAGE,
+  });
+  hist.items = reset ? page.items : [...hist.items, ...page.items];
+  hist.total = page.total;
+  hist.loadedTotal = state?.historyTotal ?? -1;
+  renderHistoryList();
+}
+
+function renderHistoryList() {
+  const groups: HTMLElement[] = [];
+  let current = "";
+  let list: HTMLUListElement | null = null;
+  for (const h of hist.items) {
+    const label = dayLabel(h.at);
+    if (label !== current || !list) {
+      current = label;
+      const head = el("h2", "label day", label);
+      list = el("ul", "rows");
+      groups.push(head, list);
+    }
+    list.append(row(h, true));
+  }
+  $("hist-groups").replaceChildren(...groups);
+  const kept = state?.settings.keepTranscripts ?? true;
+  $("hist-sub").textContent = kept
+    ? "Every dictation, newest first. Kept on this PC only."
+    : "History is off, so this is only this session. Turn on \"Keep history on this PC\" in Settings to keep every dictation.";
+  $("hist-count").textContent = hist.query
+    ? `${hist.total.toLocaleString()} ${hist.total === 1 ? "match" : "matches"}`
+    : `${hist.total.toLocaleString()} ${hist.total === 1 ? "dictation" : "dictations"}`;
+  $("hist-empty").hidden = hist.items.length > 0;
+  $("hist-empty").textContent = hist.query ? "Nothing matches that." : "Nothing yet. Hold your shortcut and talk.";
+  $("hist-more").hidden = hist.items.length >= hist.total;
 }
 
 function renderDictionary(s: UiState) {
@@ -186,18 +273,20 @@ function renderDictionary(s: UiState) {
   $("words").replaceChildren(
     ...s.dictionary.map((e, i) => {
       const li = el("li", "word");
-      li.append(el("span", "w", e.word), el("span", "heard", e.aliases.length ? e.aliases.join("  ·  ") : "spelling only"));
-      const rm = el("button", "tbtn danger", "Remove");
-      rm.type = "button";
-      rm.setAttribute("aria-label", `Remove ${e.word}`);
-      rm.onclick = () => saveDictionary(s.dictionary.filter((_, j) => j !== i));
-      li.append(rm);
+      const w = el("span", "w", e.word);
+      if (e.learned) {
+        const badge = el("span", "badge", "learned");
+        badge.title = "Added automatically from a correction you made";
+        w.append(badge);
+      }
+      li.append(w, el("span", "heard", e.aliases.length ? e.aliases.join("  ·  ") : "spelling only"));
+      li.append(button("Remove", "tbtn danger", () => saveDictionary(s.dictionary.filter((_, j) => j !== i)), `Remove ${e.word}`));
       return li;
     }),
   );
   $("dict-note").textContent =
     s.settings.cleanup === "light"
-      ? "Light cleanup swaps the \"heard as\" spellings as you dictate, and fixes the word's capitals."
+      ? "Light cleanup swaps the \"heard as\" spellings as you dictate, and fixes the word's capitals. Words marked learned came from your own corrections."
       : "Text cleanup is off, so these aren't applied. Turn on Light in Settings.";
 }
 
@@ -207,15 +296,13 @@ function renderSettings(s: UiState) {
   const keySeg = $("key-seg");
   if (keySeg.childElementCount === 0) {
     for (const [id, label] of s.hotkeys) {
-      const b = el("button", undefined, label);
-      b.type = "button";
-      b.dataset.key = id;
-      b.onclick = () => {
+      const b = button(label, "", () => {
         $("key-pick").hidden = true;
         $("key-change").textContent = "Change";
         $("key-change").classList.remove("on");
         save({ hotkey: id });
-      };
+      });
+      b.dataset.key = id;
       keySeg.append(b);
     }
   }
@@ -244,9 +331,11 @@ function renderSettings(s: UiState) {
     b.setAttribute("aria-pressed", String(b.dataset.clean === st.cleanup));
   }
   $("clean-note").textContent = CLEAN_NOTES[st.cleanup] ?? "";
+  $("days-row").hidden = !st.keepTranscripts;
+  $<HTMLSelectElement>("days").value = String(st.historyDays);
   const n = s.transcriptCount;
   $("tx-row").hidden = !st.keepTranscripts && n === 0;
-  $("tx-count").textContent = n === 1 ? "1 dictation saved" : `${n} dictations saved`;
+  $("tx-count").textContent = n === 1 ? "1 dictation in history" : `${n.toLocaleString()} dictations in history`;
   $("tx-clear").hidden = n === 0;
   $("version").textContent = `Sotto ${s.version}`;
 }
@@ -257,6 +346,8 @@ function render(s: UiState) {
   renderHome(s);
   renderDictionary(s);
   renderSettings(s);
+  // A new dictation arrived while History is open: show it.
+  if (view === "history" && s.historyTotal !== hist.loadedTotal && !hist.query) loadHistory(true);
 }
 
 async function refresh() {
@@ -320,7 +411,15 @@ document.addEventListener("click", (e) => {
   }
 });
 
-$("search").addEventListener("input", () => state && renderHistory(state));
+let searchTimer = 0;
+$("search").addEventListener("input", () => {
+  window.clearTimeout(searchTimer);
+  searchTimer = window.setTimeout(() => {
+    hist.query = $<HTMLInputElement>("search").value;
+    loadHistory(true);
+  }, 150);
+});
+$("hist-more").onclick = () => loadHistory(false);
 $("setup-retry").onclick = () => invoke("download_model").then(refresh);
 
 $<HTMLFormElement>("dict-form").addEventListener("submit", (e) => {
@@ -349,17 +448,23 @@ for (const b of all<HTMLButtonElement>("[data-clean]")) b.onclick = () => save({
 for (const t of all<HTMLInputElement>("[data-toggle]")) t.onchange = () => save({ [t.dataset.toggle as Toggle]: t.checked });
 $("mic").onchange = () => save({ mic: $<HTMLSelectElement>("mic").value || null });
 $("keep").onchange = () => save({ keepModelMins: Number($<HTMLSelectElement>("keep").value) });
+$("days").onchange = () => save({ historyDays: Number($<HTMLSelectElement>("days").value) });
 $("pill-reset").onclick = () => invoke("reset_pill").then(refresh);
 $("tx-show").onclick = () => invoke("show_transcripts");
 $("tx-clear").onclick = async () => {
   const n = state?.transcriptCount ?? 0;
-  if (!confirm(`Delete ${n} saved ${n === 1 ? "dictation" : "dictations"}? This can't be undone.`)) return;
+  if (!confirm(`Delete all ${n} ${n === 1 ? "dictation" : "dictations"} from history? This can't be undone.`)) return;
   await invoke("clear_transcripts");
+  hist.items = [];
+  hist.total = 0;
+  renderHistoryList();
   await refresh();
 };
 
 listen("state-changed", refresh);
 listen<string>("navigate", (e) => setView(e.payload));
 
-setView(location.hash.slice(1));
-refresh().then(loadMics);
+refresh().then(() => {
+  setView(location.hash.slice(1));
+  loadMics();
+});

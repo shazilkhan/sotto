@@ -5,6 +5,7 @@
 //! for every keystroke system-wide and drops it if it is slow, so the
 //! callback only updates a tiny key set and posts to a channel.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
@@ -25,6 +26,11 @@ use crate::engine::Msg;
 
 /// Tags input we inject ourselves so the hook can ignore it.
 pub const INJECTED_TAG: usize = 0x5077_0770;
+
+/// Set while a hands-free dictation is running, so Esc can cancel it.
+/// Esc is ignored the rest of the time.
+pub static HANDS_FREE: AtomicBool = AtomicBool::new(false);
+const VK_ESCAPE: u32 = 0x1B;
 
 const VK_LSHIFT: u32 = 0xA0;
 const VK_RSHIFT: u32 = 0xA1;
@@ -70,6 +76,8 @@ pub enum HotkeyEvent {
     Released,
     /// Another key joined the chord, so it was a normal shortcut.
     Cancelled,
+    /// Esc during a hands-free dictation.
+    Escape,
 }
 
 #[derive(PartialEq)]
@@ -143,6 +151,13 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let msg = wparam.0 as u32;
         let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
         let up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+        if down && kb.vkCode == VK_ESCAPE && HANDS_FREE.load(Ordering::Relaxed) {
+            if let Ok(guard) = STATE.try_lock() {
+                if let Some(state) = guard.as_ref() {
+                    let _ = state.tx.send(Msg::Hotkey(HotkeyEvent::Escape));
+                }
+            }
+        }
         if (down || up) && kb.dwExtraInfo != INJECTED_TAG {
             if let Ok(mut guard) = STATE.try_lock() {
                 if let Some(state) = guard.as_mut() {

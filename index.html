@@ -30,6 +30,7 @@
         <nav aria-label="Main">
           <div class="links">
             <a class="nav" href="#home" data-view="home">Home</a>
+            <a class="nav" href="#history" data-view="history">History</a>
             <a class="nav" href="#dictionary" data-view="dictionary">Dictionary</a>
             <a class="nav" href="#settings" data-view="settings">Settings</a>
           </div>
@@ -62,15 +63,31 @@
             <section aria-labelledby="recent-h">
               <div class="list-head">
                 <h2 id="recent-h">Recent</h2>
+                <a href="#history" data-view="history" class="see-all" id="see-all">See all</a>
+              </div>
+              <ul class="rows" id="recent"></ul>
+              <p class="muted small empty" id="recent-empty">Nothing yet. Hold your shortcut and talk, and your dictations show up here.</p>
+            </section>
+          </section>
+
+          <!-- History -->
+          <section class="view" id="view-history" aria-labelledby="hist-h" hidden>
+            <header class="page-head">
+              <h1 id="hist-h">History</h1>
+              <p id="hist-sub">Every dictation, newest first. Kept on this PC only.</p>
+            </header>
+            <section aria-label="All dictations">
+              <div class="list-head">
+                <span class="label" id="hist-count"></span>
                 <label class="search">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
-                  <span class="sr">Search dictations</span>
+                  <span class="sr">Search history</span>
                   <input type="search" id="search" placeholder="Search" />
                 </label>
               </div>
-              <ul class="rows" id="history"></ul>
-              <p class="muted small" id="history-empty">Nothing yet. Hold your shortcut and talk; your last 20 dictations show up here.</p>
-              <p class="muted small foot">Kept until Sotto quits. Turn on "Keep transcripts on this PC" in Settings to keep them longer.</p>
+              <div id="hist-groups"></div>
+              <p class="muted small empty" id="hist-empty" hidden></p>
+              <button type="button" class="ghost more" id="hist-more" hidden>Show more</button>
             </section>
           </section>
 
@@ -116,6 +133,10 @@
                   <span class="name">Pick a shortcut<small>Any other key pressed while you hold it cancels, so normal shortcuts still work</small></span>
                   <span class="seg" role="group" aria-label="Shortcut" id="key-seg"></span>
                 </div>
+                <label class="row">
+                  <span class="name">Hands-free<small>Double-tap the shortcut to keep listening without holding it. Tap it again, or click the pill, to finish. Esc cancels.</small></span>
+                  <input type="checkbox" class="sw" data-toggle="handsFree" />
+                </label>
               </div>
             </section>
 
@@ -198,6 +219,10 @@
                   </span>
                 </div>
                 <p class="muted note" id="clean-note"></p>
+                <label class="row spaced">
+                  <span class="name">Learn from my corrections<small>When you fix a name right after it's pasted, Sotto adds it to your Dictionary. It reads only that text box, once, and never password fields.</small></span>
+                  <input type="checkbox" class="sw" data-toggle="learnCorrections" />
+                </label>
               </div>
             </section>
 
@@ -205,9 +230,18 @@
               <div class="sec-h"><h2 id="s-priv">Privacy</h2><p>Audio never leaves this PC.</p></div>
               <div class="sec-b">
                 <label class="row">
-                  <span class="name">Keep transcripts on this PC<small>For tuning cleanup. Saved in your AppData, never uploaded</small></span>
+                  <span class="name">Keep history on this PC<small>Every dictation, saved in your AppData and never uploaded. Off keeps only this session's.</small></span>
                   <input type="checkbox" class="sw" data-toggle="keepTranscripts" />
                 </label>
+                <div class="row" id="days-row">
+                  <label class="name" for="days">Keep it for</label>
+                  <select id="days" class="sel narrow">
+                    <option value="7">7 days</option>
+                    <option value="30">30 days</option>
+                    <option value="365">1 year</option>
+                    <option value="-1">Forever</option>
+                  </select>
+                </div>
                 <div class="row" id="tx-row">
                   <span class="mono muted small" id="tx-count">0 dictations saved</span>
                   <span class="inline gap20">

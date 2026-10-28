@@ -8,6 +8,7 @@ mod dictionary;
 mod engine;
 mod hotkey;
 mod icons;
+mod learn;
 mod logger;
 mod model;
 mod mute;
@@ -37,7 +38,9 @@ struct UiState {
     model_loaded: bool,
     model_bytes: u64,
     download: Download,
-    history: Vec<HistoryItem>,
+    /// The latest few dictations, for Home.
+    recent: Vec<HistoryItem>,
+    history_total: usize,
     dictionary: Vec<Entry>,
     week: stats::Week,
     transcript_count: usize,
@@ -123,6 +126,55 @@ fn start_download(app: &AppHandle, shared: &Arc<Shared>) {
     });
 }
 
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+fn to_item(e: transcripts::Entry) -> HistoryItem {
+    HistoryItem {
+        id: e.id,
+        text: e.text().to_string(),
+        app: context::display_name(e.app.as_deref()),
+        at: e.at,
+        audio_secs: e.audio_secs,
+        took_ms: e.asr_ms,
+        raw: e.raw,
+    }
+}
+
+/// History from the file when it's kept, else this session's (in memory).
+fn history_page(shared: &Shared, query: &str, offset: usize, limit: usize) -> (Vec<HistoryItem>, usize) {
+    if shared.settings().keep_transcripts {
+        let (items, total) = transcripts::list(query, offset, limit);
+        return (items.into_iter().map(to_item).collect(), total);
+    }
+    let q = query.trim().to_lowercase();
+    let all: Vec<HistoryItem> = shared
+        .history
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|h| q.is_empty() || h.text.to_lowercase().contains(&q) || h.app.to_lowercase().contains(&q))
+        .cloned()
+        .collect();
+    let total = all.len();
+    (all.into_iter().skip(offset).take(limit).collect(), total)
+}
+
+fn on_learned(app: &AppHandle, heard: String, word: String) {
+    let shared = app.state::<Arc<Shared>>();
+    let mut dict = shared.dictionary.write().unwrap();
+    if !dictionary::learn(&mut dict, &heard, &word) {
+        return;
+    }
+    if let Err(e) = dictionary::save(&dict) {
+        log::warn!("saving dictionary: {e}");
+    }
+    drop(dict);
+    pill::set(PillState::Message { text: format!("Added {word} to Dictionary"), error: false, ttl_ms: Some(2600) });
+    emit_state(app);
+}
+
 fn save(shared: &Shared, update: impl FnOnce(&mut Settings)) -> Settings {
     let mut s = shared.settings.write().unwrap();
     update(&mut s);
@@ -151,6 +203,9 @@ fn on_pill_event(app: &AppHandle, ev: PillEvent) {
             pill::set_mode(&s.pill_mode);
             emit_state(app);
         }
+        PillEvent::StopListening => {
+            let _ = shared.tx.send(Msg::StopHandsFree);
+        }
         PillEvent::Quit => app.exit(0),
         PillEvent::Moved { x, y } => {
             save(&shared, |s| {
@@ -170,7 +225,8 @@ async fn get_state(shared: State<'_, Arc<Shared>>) -> Result<UiState, String> {
         model_loaded: shared.model_loaded(),
         model_bytes: model::total_bytes(),
         download: shared.download.lock().unwrap().clone(),
-        history: shared.history.lock().unwrap().iter().cloned().collect(),
+        recent: history_page(&shared, "", 0, 5).0,
+        history_total: history_page(&shared, "", 0, 0).1,
         dictionary: shared.dictionary.read().unwrap().clone(),
         week: stats::week(),
         transcript_count: transcripts::count(),
@@ -203,6 +259,9 @@ async fn save_settings(app: AppHandle, shared: State<'_, Arc<Shared>>, settings:
     }
     if old.pill_mode != s.pill_mode {
         pill::set_mode(&s.pill_mode);
+    }
+    if old.history_days != s.history_days {
+        transcripts::maintain(s.history_days, now_secs());
     }
     tray::show_status(&app, *shared.status.lock().unwrap(), &s);
     let _ = shared.tx.send(Msg::Wake);
@@ -249,8 +308,29 @@ async fn download_model(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Resul
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct HistoryPage {
+    items: Vec<HistoryItem>,
+    total: usize,
+}
+
 #[tauri::command]
-async fn clear_transcripts(app: AppHandle) -> Result<(), String> {
+async fn get_history(shared: State<'_, Arc<Shared>>, query: String, offset: usize, limit: usize) -> Result<HistoryPage, String> {
+    let (items, total) = history_page(&shared, &query, offset, limit.min(500));
+    Ok(HistoryPage { items, total })
+}
+
+#[tauri::command]
+async fn delete_history(app: AppHandle, shared: State<'_, Arc<Shared>>, id: u64) -> Result<(), String> {
+    shared.history.lock().unwrap().retain(|h| h.id != id);
+    transcripts::delete(id).map_err(|e| e.to_string())?;
+    emit_state(&app);
+    Ok(())
+}
+
+#[tauri::command]
+async fn clear_transcripts(app: AppHandle, shared: State<'_, Arc<Shared>>) -> Result<(), String> {
+    shared.history.lock().unwrap().clear();
     transcripts::clear().map_err(|e| e.to_string())?;
     emit_state(&app);
     Ok(())
@@ -308,6 +388,8 @@ fn main() {
             reset_pill,
             mic_test,
             mic_level,
+            get_history,
+            delete_history,
             download_model,
             clear_transcripts,
             show_transcripts,
@@ -324,6 +406,7 @@ fn main() {
                 }
             }
 
+            transcripts::maintain(s.history_days, now_secs());
             let (tx, rx) = mpsc::channel();
             let shared = Arc::new(Shared::new(s.clone(), dictionary::load(), tx.clone()));
             app.manage(shared.clone());
@@ -339,6 +422,10 @@ fn main() {
                 let events = handle.clone();
                 let pos = s.pill_x.zip(s.pill_y);
                 pill::start(&s.pill_mode, hotkey::label_for(&s.hotkey), pos, Box::new(move |ev| on_pill_event(&events, ev)));
+            }
+            {
+                let learner = handle.clone();
+                learn::start(Box::new(move |heard, word| on_learned(&learner, heard, word)));
             }
             if !model::is_installed() {
                 start_download(&handle, &shared);

@@ -652,7 +652,7 @@ h2 {
   border-top: 1px solid var(--line);
 }
 
-.rows li .app {
+.rows li .from {
   flex: 0 0 80px;
 }
 
@@ -703,10 +703,43 @@ h2 {
   line-height: 1.5;
 }
 
-#history-empty {
+.empty {
   margin: 0;
   padding: 16px 0;
   border-top: 1px solid var(--line);
+}
+
+.see-all {
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.day {
+  margin: 28px 0 8px;
+}
+
+.day:first-child {
+  margin-top: 0;
+}
+
+.more {
+  margin-top: 24px;
+}
+
+.badge {
+  font: 500 10px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--signal-ink);
+  margin-left: 10px;
+  vertical-align: 3px;
+}
+
+.row.spaced {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
 }
 
 /* Dictionary */

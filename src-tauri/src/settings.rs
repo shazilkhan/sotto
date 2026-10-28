@@ -17,8 +17,15 @@ pub struct Settings {
     /// 0 unloads right away, -1 keeps it loaded.
     pub keep_model_mins: i32,
     pub start_with_windows: bool,
-    /// Append each dictation to a local JSONL file for tuning cleanup.
+    /// Keep dictation history on this PC (a local JSONL file). Off keeps
+    /// only this session's dictations, in memory.
     pub keep_transcripts: bool,
+    /// Days of history to keep; -1 keeps everything.
+    pub history_days: i32,
+    /// Double-tap the shortcut to keep listening without holding it.
+    pub hands_free: bool,
+    /// Learn spellings from edits made right after a dictation is pasted.
+    pub learn_corrections: bool,
     /// "always", "talking" (only while dictating) or "never".
     pub pill_mode: String,
     /// Where the pill's underline sits, in screen pixels. `None` is bottom
@@ -39,7 +46,10 @@ impl Default for Settings {
             trailing_space: true,
             keep_model_mins: 15,
             start_with_windows: true,
-            keep_transcripts: false,
+            keep_transcripts: true,
+            history_days: -1,
+            hands_free: true,
+            learn_corrections: true,
             pill_mode: "always".into(),
             pill_x: None,
             pill_y: None,

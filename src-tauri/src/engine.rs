@@ -19,12 +19,16 @@ use crate::dictionary::Entry;
 use crate::hotkey::{self, HotkeyEvent};
 use crate::pill::{self, PillState};
 use crate::settings::Settings;
-use crate::{cleanup, clipboard, context, model, mute, sounds, stats, transcripts};
+use crate::{cleanup, clipboard, context, learn, model, mute, sounds, stats, transcripts};
 
 /// Keep recording briefly after release; people let go on the last syllable.
 const TAIL: Duration = Duration::from_millis(150);
-/// Shorter presses are treated as accidental taps.
+/// Shorter recordings are treated as accidental taps.
 const MIN_SECS: f32 = 0.3;
+/// A press released sooner than this is a tap, not a hold.
+const TAP_MAX: Duration = Duration::from_millis(300);
+/// A second tap within this window locks hands-free listening.
+const DOUBLE_TAP: Duration = Duration::from_millis(400);
 const MAX_RECORDING: Duration = Duration::from_secs(10 * 60);
 /// How long the Settings mic test keeps the mic open.
 const MIC_TEST: Duration = Duration::from_secs(6);
@@ -37,6 +41,8 @@ pub enum Msg {
     Transcribed(Result<Transcript, String>),
     /// Start (true) or stop (false) the Settings mic level test.
     MicTest(bool),
+    /// The pill was clicked during hands-free: finish and paste.
+    StopHandsFree,
     /// Settings changed; recompute timers.
     Wake,
 }
@@ -64,6 +70,7 @@ pub enum Status {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryItem {
+    pub id: u64,
     pub text: String,
     /// Before cleanup, for "copy original".
     pub raw: String,
@@ -188,6 +195,11 @@ struct Engine {
     /// App that had focus when the hotkey went down.
     focused_app: Option<String>,
     muted: Option<mute::Muted>,
+    muted_count: u32,
+    /// Locked on by a double-tap; the next press (or a pill click) stops it.
+    hands_free: bool,
+    /// Set when a press was a quick tap: wait briefly for a second tap.
+    tap_wait: Option<Instant>,
     pending: usize,
     last_used: Instant,
 }
@@ -217,6 +229,9 @@ impl Engine {
         if let Some((_, started)) = &self.mic_test {
             wait = wait.min(MIC_TEST.saturating_sub(started.elapsed()));
         }
+        if let Some(tapped) = self.tap_wait {
+            wait = wait.min(DOUBLE_TAP.saturating_sub(tapped.elapsed()));
+        }
         let keep = self.shared.settings.read().unwrap().keep_model_mins;
         if keep > 0 && self.pending == 0 && self.recording.is_none() && self.shared.model_loaded() {
             let deadline = Duration::from_secs(keep as u64 * 60);
@@ -228,7 +243,12 @@ impl Engine {
     fn on_tick(&mut self) {
         if self.recording.as_ref().is_some_and(|(_, s)| s.elapsed() >= MAX_RECORDING) {
             log::info!("hit the {} min limit, stopping", MAX_RECORDING.as_secs() / 60);
-            self.on_released();
+            self.finish();
+        }
+        if self.tap_wait.is_some_and(|t| t.elapsed() >= DOUBLE_TAP) {
+            // A single quick tap: nothing to dictate.
+            self.tap_wait = None;
+            self.discard();
         }
         if self.mic_test.as_ref().is_some_and(|(_, s)| s.elapsed() >= MIC_TEST) {
             self.mic_test = None;
@@ -252,7 +272,16 @@ impl Engine {
     }
 
     fn on_pressed(&mut self) {
+        learn::check_now();
         if self.recording.is_some() {
+            if self.hands_free {
+                self.finish();
+            } else if self.tap_wait.take().is_some() {
+                self.hands_free = true;
+                hotkey::HANDS_FREE.store(true, Ordering::Relaxed);
+                pill::set(PillState::Listening { muted: self.muted_count, hands_free: true });
+                log::info!("hands-free on");
+            }
             return;
         }
         self.mic_test = None;
@@ -276,7 +305,8 @@ impl Engine {
                 return;
             }
         }
-        pill::set(PillState::Listening { muted: 0 });
+        self.muted_count = 0;
+        pill::set(PillState::Listening { muted: 0, hands_free: false });
         self.shared.preload();
         if s.sounds {
             sounds::start();
@@ -286,8 +316,9 @@ impl Engine {
         }
         if s.mute_while_dictating {
             let muted = mute::mute_others();
-            if muted.count() > 0 {
-                pill::set(PillState::Listening { muted: muted.count() as u32 });
+            self.muted_count = muted.count() as u32;
+            if self.muted_count > 0 {
+                pill::set(PillState::Listening { muted: self.muted_count, hands_free: false });
             }
             self.muted = Some(muted);
         }
@@ -304,6 +335,35 @@ impl Engine {
     }
 
     fn on_released(&mut self) {
+        let Some((_, started)) = &self.recording else { return };
+        if self.hands_free || self.tap_wait.is_some() {
+            return;
+        }
+        if self.shared.settings().hands_free && started.elapsed() < TAP_MAX {
+            self.tap_wait = Some(Instant::now());
+            return;
+        }
+        self.finish();
+    }
+
+    fn reset_hands_free(&mut self) {
+        self.hands_free = false;
+        self.tap_wait = None;
+        hotkey::HANDS_FREE.store(false, Ordering::Relaxed);
+    }
+
+    /// Stops without transcribing (a stray tap, Esc, another key).
+    fn discard(&mut self) {
+        self.reset_hands_free();
+        if self.stop_recording().is_some() {
+            pill::set(PillState::Idle);
+            self.refresh_status();
+        }
+    }
+
+    /// Stops recording and sends the audio off to be transcribed.
+    fn finish(&mut self) {
+        self.reset_hands_free();
         if self.recording.is_none() {
             return;
         }
@@ -346,9 +406,15 @@ impl Engine {
     }
 
     fn on_cancelled(&mut self) {
-        if self.stop_recording().is_some() {
-            pill::set(PillState::Idle);
-            self.refresh_status();
+        if !self.hands_free {
+            self.discard();
+        }
+    }
+
+    fn on_escape(&mut self) {
+        if self.hands_free {
+            log::info!("hands-free cancelled");
+            self.discard();
         }
     }
 
@@ -366,10 +432,15 @@ impl Engine {
                 }
                 clipboard::paste(&out);
                 pill::set(PillState::Pasted);
+                if s.learn_corrections {
+                    learn::watch(&t.text);
+                }
                 stats::record(t.text.split_whitespace().count() as u64, t.audio_secs);
-                let at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+                let (at, id) = (now.as_secs(), now.as_millis() as u64);
                 if s.keep_transcripts {
                     transcripts::append(&transcripts::Entry {
+                        id,
                         at,
                         app: t.app.clone(),
                         audio_secs: t.audio_secs,
@@ -380,6 +451,7 @@ impl Engine {
                 }
                 let mut history = self.shared.history.lock().unwrap();
                 history.push_front(HistoryItem {
+                    id,
                     text: t.text,
                     raw: t.raw,
                     app: context::display_name(t.app.as_deref()),
@@ -440,6 +512,9 @@ pub fn run(app: AppHandle, shared: Arc<Shared>, rx: Receiver<Msg>) {
         mic_test: None,
         focused_app: None,
         muted: None,
+        muted_count: 0,
+        hands_free: false,
+        tap_wait: None,
         pending: 0,
         last_used: Instant::now(),
     };
@@ -449,6 +524,8 @@ pub fn run(app: AppHandle, shared: Arc<Shared>, rx: Receiver<Msg>) {
             Ok(Msg::Hotkey(HotkeyEvent::Pressed)) => engine.on_pressed(),
             Ok(Msg::Hotkey(HotkeyEvent::Released)) => engine.on_released(),
             Ok(Msg::Hotkey(HotkeyEvent::Cancelled)) => engine.on_cancelled(),
+            Ok(Msg::Hotkey(HotkeyEvent::Escape)) => engine.on_escape(),
+            Ok(Msg::StopHandsFree) => engine.finish(),
             Ok(Msg::Transcribed(result)) => engine.on_transcribed(result),
             Ok(Msg::MicTest(on)) => engine.on_mic_test(on),
             Ok(Msg::Wake) => engine.refresh_status(),

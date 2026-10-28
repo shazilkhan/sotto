@@ -17,7 +17,14 @@ pub struct Context {
     pub dictionary: Vec<Entry>,
 }
 
-const FILLERS: &[&str] = &["um", "umm", "uh", "uhh", "uhm", "er", "erm", "ah", "hmm", "hm", "mm", "mmm"];
+/// Hesitation sounds, including stretched spellings ("uhhh", "ummm", "aah",
+/// "ooh"). Plain "oh" and "mhm" carry meaning and are kept.
+fn filler_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^(?:u+h+m*|u+m+|e+r+m*|e+h+|a+h+|a{2,}h*|o{2,}h*|o+h{2,}|h+m+|m{2,})$").expect("valid regex")
+    })
+}
 /// After a removed filler, a comma before one of these is kept
 /// ("went well, um, and" keeps its comma; "should, uh, ship" loses it).
 const CONJUNCTIONS: &[&str] = &["and", "but", "or", "so", "because", "then", "which", "while"];
@@ -73,8 +80,12 @@ fn lowercase_first(word: &str) -> String {
 }
 
 fn is_filler(word: &str) -> bool {
-    let c = core(word).to_lowercase();
-    FILLERS.contains(&c.as_str())
+    let c = core(word);
+    // "ER", "UM" written in capitals are acronyms, not hesitations.
+    if c.len() > 1 && c.chars().all(|ch| ch.is_ascii_uppercase()) {
+        return false;
+    }
+    filler_regex().is_match(&c.to_lowercase())
 }
 
 /// Drops um/uh/hmm and fixes the punctuation around them.
@@ -257,7 +268,7 @@ pub fn bench(path: &str) {
         };
         total += 1;
         let mut dictionary = saved.clone();
-        dictionary.extend(case.dictionary.iter().map(|(w, a)| Entry { word: w.clone(), aliases: a.clone() }));
+        dictionary.extend(case.dictionary.iter().map(|(w, a)| Entry { word: w.clone(), aliases: a.clone(), learned: false }));
         let ctx = Context { app: case.app.clone(), light: true, dictionary };
         let t = Instant::now();
         let out = clean(&case.raw, &ctx);
@@ -325,6 +336,22 @@ mod tests {
     }
 
     #[test]
+    fn stretched_and_other_sounds_go() {
+        assert_eq!(light("Ahh, that makes sense."), "That makes sense.");
+        assert_eq!(light("Ooh, nice one. Uhhh, ship it."), "Nice one. Ship it.");
+        assert_eq!(light("So, ummm, hmmm, let's go."), "So let's go.");
+        assert_eq!(light("Eh, fine."), "Fine.");
+    }
+
+    #[test]
+    fn meaningful_sounds_and_acronyms_stay() {
+        assert_eq!(light("Oh, I see."), "Oh, I see.");
+        assert_eq!(light("Mhm, sounds right."), "Mhm, sounds right.");
+        assert_eq!(light("We went to the ER last night."), "We went to the ER last night.");
+        assert_eq!(light("Ahead of time, ahem."), "Ahead of time, ahem.");
+    }
+
+    #[test]
     fn fillers_inside_words_stay() {
         assert_eq!(light("The umbrella and the hummus."), "The umbrella and the hummus.");
         assert_eq!(light("Uh-huh, that works."), "Uh-huh, that works.");
@@ -349,7 +376,7 @@ mod tests {
         let ctx = Context {
             app: None,
             light: true,
-            dictionary: vec![Entry { word: "Supabase".into(), aliases: vec!["supa base".into()] }],
+            dictionary: vec![Entry { word: "Supabase".into(), aliases: vec!["supa base".into()], learned: false }],
         };
         assert_eq!(clean("Pushed to supa base and supabase.", &ctx), "Pushed to Supabase and Supabase.");
         assert_eq!(clean("Supabases are nice.", &ctx), "Supabases are nice.");

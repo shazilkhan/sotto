@@ -10,6 +10,9 @@ pub struct Entry {
     pub word: String,
     #[serde(default)]
     pub aliases: Vec<String>,
+    /// Added automatically from a correction the user made.
+    #[serde(default)]
+    pub learned: bool,
 }
 
 fn path() -> PathBuf {
@@ -38,9 +41,23 @@ pub fn normalize(entries: Vec<Entry>) -> Vec<Entry> {
                 .map(|a| a.trim().to_string())
                 .filter(|a| !a.is_empty() && !a.eq_ignore_ascii_case(&word))
                 .collect();
-            Some(Entry { word, aliases })
+            Some(Entry { word, aliases, learned: e.learned })
         })
         .collect()
+}
+
+/// Adds `heard` as a spelling of `word`, creating the word if it's new.
+/// Returns false when the dictionary already knew it.
+pub fn learn(entries: &mut Vec<Entry>, heard: &str, word: &str) -> bool {
+    if let Some(e) = entries.iter_mut().find(|e| e.word.eq_ignore_ascii_case(word)) {
+        if e.aliases.iter().any(|a| a.eq_ignore_ascii_case(heard)) {
+            return false;
+        }
+        e.aliases.push(heard.to_string());
+        return true;
+    }
+    entries.insert(0, Entry { word: word.to_string(), aliases: vec![heard.to_string()], learned: true });
+    true
 }
 
 pub fn save(entries: &[Entry]) -> std::io::Result<()> {
