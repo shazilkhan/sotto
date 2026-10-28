@@ -196,6 +196,9 @@ const COMMON: &[&str] = &[
     "be", "are", "was", "were", "i", "you", "he", "she", "we", "they", "this", "that", "there", "their",
     "then", "than", "your", "you're", "its", "it's", "not", "no", "yes", "do", "does", "did", "have",
     "has", "had", "can", "will", "would", "should", "could", "my", "me", "our", "us", "if", "as", "by",
+    // One-word chat replies people restyle ("Thanks" -> "Thx", "Thank you").
+    "thanks", "thank", "thx", "okay", "ok", "sure", "yeah", "yep", "nope", "cool", "great", "nice", "hi",
+    "hey", "hello", "bye", "please", "sorry", "lol", "fine", "done", "alright",
 ];
 
 fn core(w: &str) -> &str {
@@ -241,14 +244,6 @@ fn sounds_alike(heard: &str, word: &str) -> bool {
 /// Lowercase letters and digits only: "Supa base" -> "supabase".
 fn letters(s: &str) -> String {
     s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
-}
-
-/// A respelling rather than a different word: at most 40% of the letters
-/// change ("Superbase" -> "Supabase", but not "Thanks" -> "Thx").
-fn respelled(heard: &str, word: &str) -> bool {
-    let (a, b) = (letters(heard), letters(word));
-    let longest = a.chars().count().max(b.chars().count()).max(1);
-    levenshtein(&a, &b) * 10 <= longest * 4
 }
 
 /// At either end of the paste the field may go on with other text, so the
@@ -353,11 +348,10 @@ fn number_fix(p: &[&str], f: &[&str], pairs: &[(usize, usize)], gap: &Gap) -> Op
 
 /// A misheard name or term swapped for the right one, one to three words
 /// on either side: "Neve" -> "Niamh", "supa base" -> "Supabase",
-/// "Superbase" -> "Supa base". In a short message every first word is
-/// capitalised, so `short` asks for more when it's one word for one word:
-/// capitals or digits inside it, or a close respelling. Retyping a one-word
-/// "Thanks" as "Thx" is a style change, not a mishearing.
-fn term_fix(p: &[&str], f: &[&str], gap: &Gap, short: bool) -> Option<(String, String)> {
+/// "Superbase" -> "Supa base". The fix must start with a capital, keep the
+/// first sound, and not replace a common word: retyping a one-word "Thanks"
+/// as "Thx" is a style change, not a mishearing.
+fn term_fix(p: &[&str], f: &[&str], gap: &Gap) -> Option<(String, String)> {
     let heard = &p[gap.heard.clone()];
     let fixed = &f[gap.fixed.clone()];
     if heard.len() > 3 || fixed.len() > 3 {
@@ -365,10 +359,6 @@ fn term_fix(p: &[&str], f: &[&str], gap: &Gap, short: bool) -> Option<(String, S
     }
     let heard_text = heard.join(" ");
     let word = fixed.join(" ");
-    let inner_mark = fixed.iter().any(|w| w.chars().skip(1).any(|c| c.is_uppercase() || c.is_ascii_digit()));
-    if short && heard.len() == 1 && fixed.len() == 1 && !inner_mark && !respelled(&heard_text, &word) {
-        return None;
-    }
     let ok = letters(&word).chars().count() >= 3
         && fixed.iter().any(|w| looks_like_term(w))
         && fixed.iter().all(|w| w.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '\''))
@@ -459,7 +449,7 @@ pub fn find_corrections(pasted: &str, field: &str) -> Vec<(String, String)> {
     let mut found: Vec<(String, String)> = gaps
         .iter()
         .filter(|g| !g.heard.is_empty() && !g.fixed.is_empty())
-        .filter_map(|g| number_fix(&p, f, &pairs, g).or_else(|| term_fix(&p, f, g, short)))
+        .filter_map(|g| number_fix(&p, f, &pairs, g).or_else(|| term_fix(&p, f, g)))
         .collect();
     found.extend(pairs.iter().filter_map(|&(pi, fj)| case_fix(p[pi], f[fj])));
     found.dedup();
@@ -506,6 +496,10 @@ mod tests {
         assert_eq!(got, vec![("Nifty fifty".to_string(), "Nifty 50".to_string())]);
         // A one-word restyle, or a short paste inside other typed text, isn't learned.
         assert!(find_corrections("Thanks.", "Thx").is_empty());
+        assert!(find_corrections("Thanks.", "Thank you").is_empty());
+        // Speech recognition can be far off on one word; the fix still counts.
+        let got = find_corrections("Superbus.", "Supabase");
+        assert_eq!(got, vec![("Superbus".to_string(), "Supabase".to_string())]);
         assert!(find_corrections("Supa base", "Earlier I wrote about Supabase").is_empty());
     }
 
