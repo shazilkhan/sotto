@@ -31,6 +31,7 @@ pub const INJECTED_TAG: usize = 0x5077_0770;
 /// Esc is ignored the rest of the time.
 pub static HANDS_FREE: AtomicBool = AtomicBool::new(false);
 const VK_ESCAPE: u32 = 0x1B;
+const VK_RETURN: u32 = 0x0D;
 
 const VK_LSHIFT: u32 = 0xA0;
 const VK_RSHIFT: u32 = 0xA1;
@@ -151,6 +152,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         let msg = wparam.0 as u32;
         let down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
         let up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
+        if down && kb.vkCode == VK_RETURN && kb.dwExtraInfo != INJECTED_TAG {
+            // Returns at once unless a paste is being watched for fixes.
+            crate::learn::before_enter();
+        }
         if down && kb.vkCode == VK_ESCAPE && HANDS_FREE.load(Ordering::Relaxed) {
             if let Ok(guard) = STATE.try_lock() {
                 if let Some(state) = guard.as_ref() {

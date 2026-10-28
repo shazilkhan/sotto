@@ -1,17 +1,19 @@
 //! Learns spellings from the user's own fixes. Right after a paste, the
 //! focused text field is remembered. At the next dictation (or after 25 s)
 //! it's read once more, and a name the user retyped in place ("Neve" ->
-//! "Niamh") becomes a Dictionary entry.
+//! "Niamh") becomes a Dictionary entry. Pressing Enter in the meantime also
+//! reads it, because a chat box empties the moment Enter sends the message.
 //!
-//! Privacy: only the field that was pasted into is read, only once, never
-//! a password field, and nothing is kept except the learned word pair. UI
+//! Privacy: only the field that was pasted into is read, never a password
+//! field, and nothing is kept except the learned word pair. UI
 //! Automation calls run on their own thread, so a slow or hung app can't
 //! stall dictation.
 
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
@@ -22,13 +24,25 @@ use windows::Win32::UI::Accessibility::{
 
 /// How long after a paste to look for a fix, if no new dictation comes first.
 const CHECK_AFTER: Duration = Duration::from_secs(25);
+/// The longest Enter is held back while the field is read.
+const ENTER_WAIT: Duration = Duration::from_millis(150);
 const MAX_FIELD_CHARS: i32 = 20_000;
 const MAX_LEARN_PER_PASTE: usize = 2;
 
 type OnLearn = Box<dyn Fn(String, String) + Send + Sync>;
 static ON_LEARN: OnceLock<OnLearn> = OnceLock::new();
-/// Wakes the watcher for the latest paste so it checks right away.
-static ACTIVE: Mutex<Option<Sender<()>>> = Mutex::new(None);
+
+enum Cmd {
+    /// Check the paste now (a new dictation started, or a newer paste).
+    Check,
+    /// Read the field before Enter reaches the app, then reply.
+    Snapshot(Sender<()>),
+}
+
+/// Talks to the watcher for the latest paste.
+static ACTIVE: Mutex<Option<Sender<Cmd>>> = Mutex::new(None);
+/// A paste is being watched; lets the keyboard hook skip everything else.
+static WATCHING: AtomicBool = AtomicBool::new(false);
 
 /// `on_learn(heard, word)` is called for each spelling the user fixed.
 pub fn start(on_learn: OnLearn) {
@@ -37,8 +51,23 @@ pub fn start(on_learn: OnLearn) {
 
 /// Checks the last paste now (called when a new dictation starts).
 pub fn check_now() {
+    WATCHING.store(false, Ordering::Relaxed);
     if let Some(tx) = ACTIVE.lock().unwrap().take() {
-        let _ = tx.send(());
+        let _ = tx.send(Cmd::Check);
+    }
+}
+
+/// Called from the keyboard hook when Enter goes down, before the app gets
+/// it. A chat box empties as soon as Enter sends the message, so the field
+/// is read now, while the user's fix is still in it.
+pub fn before_enter() {
+    if !WATCHING.load(Ordering::Relaxed) {
+        return;
+    }
+    let Some(tx) = ACTIVE.try_lock().ok().and_then(|g| g.clone()) else { return };
+    let (done, wait) = channel();
+    if tx.send(Cmd::Snapshot(done)).is_ok() {
+        let _ = wait.recv_timeout(ENTER_WAIT);
     }
 }
 
@@ -47,8 +76,9 @@ pub fn check_now() {
 /// Windows worker threads, so it's never kept around while idle.
 pub fn watch(pasted: &str) {
     check_now();
-    let (tx, rx) = channel::<()>();
+    let (tx, rx) = channel::<Cmd>();
     *ACTIVE.lock().unwrap() = Some(tx);
+    WATCHING.store(true, Ordering::Relaxed);
     let pasted = pasted.trim().to_string();
     let spawned = std::thread::Builder::new().name("learn".into()).spawn(move || unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -56,10 +86,18 @@ pub fn watch(pasted: &str) {
             let automation: windows::core::Result<IUIAutomation> =
                 CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER);
             if let Some(el) = automation.ok().and_then(|a| a.GetFocusedElement().ok()) {
-                // Woken by the next dictation, the timeout, or a newer paste.
-                let _ = rx.recv_timeout(CHECK_AFTER);
+                // Until the next dictation, a newer paste or the timeout,
+                // keep the field as it was at the latest Enter.
+                let deadline = Instant::now() + CHECK_AFTER;
+                let mut at_enter = None;
+                while let Ok(Cmd::Snapshot(done)) = rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    if let Some(text) = read_field(&el) {
+                        at_enter = Some(text);
+                    }
+                    let _ = done.send(());
+                }
                 if let Some(on_learn) = ON_LEARN.get() {
-                    check(&(el, pasted), on_learn.as_ref());
+                    check(&pasted, read_field(&el), at_enter, on_learn.as_ref());
                 }
             }
         }
@@ -87,10 +125,34 @@ unsafe fn read_field(el: &IUIAutomationElement) -> Option<String> {
     range.GetText(MAX_FIELD_CHARS).ok().map(|s| s.to_string())
 }
 
-fn check((el, pasted): &(IUIAutomationElement, String), on_learn: &dyn Fn(String, String)) {
-    let Some(field) = (unsafe { read_field(el) }) else { return };
-    for (heard, word) in find_corrections(pasted, &field) {
-        log::info!("learned a spelling ({} chars)", word.chars().count());
+/// At least half the pasted words are still in the field.
+fn holds_paste(pasted: &str, field: &str) -> bool {
+    let words: Vec<String> = field.split_whitespace().map(|w| core(w).to_lowercase()).collect();
+    let p: Vec<String> = pasted.split_whitespace().map(|w| core(w).to_lowercase()).collect();
+    let kept = p.iter().filter(|w| words.contains(w)).count();
+    !p.is_empty() && kept * 2 >= p.len()
+}
+
+/// Uses the field as it is now, unless the paste has gone from it (the
+/// message was sent, or the box was cleared) and there's a reading from the
+/// last Enter. Logs why nothing was learned, without any of the text.
+fn check(pasted: &str, now: Option<String>, at_enter: Option<String>, on_learn: &dyn Fn(String, String)) {
+    let (field, when) = match (now, at_enter) {
+        (Some(now), _) if holds_paste(pasted, &now) => (now, "now"),
+        (_, Some(at_enter)) => (at_enter, "at Enter"),
+        (Some(now), None) => (now, "now"),
+        (None, None) => return log::info!("learning: couldn't read the text box"),
+    };
+    let found = find_corrections(pasted, &field);
+    if found.is_empty() {
+        log::info!(
+            "learning: no fix found ({} words pasted, {} in the box, read {when})",
+            pasted.split_whitespace().count(),
+            field.split_whitespace().count()
+        );
+    }
+    for (heard, word) in found {
+        log::info!("learned a spelling ({} chars, read {when})", word.chars().count());
         on_learn(heard, word);
     }
 }
@@ -239,13 +301,19 @@ fn number_fix(p: &[&str], f: &[&str], pairs: &[(usize, usize)], gap: &Gap) -> Op
 }
 
 /// A misheard name or term swapped for the right one ("Neve" -> "Niamh",
-/// "supa base" -> "Supabase").
-fn term_fix(p: &[&str], f: &[&str], gap: &Gap) -> Option<(String, String)> {
+/// "supa base" -> "Supabase"). In a short message every first word is
+/// capitalised, so `short` asks for stronger signs it's a name: words
+/// joined into one, or capitals or digits inside the word. Retyping a
+/// one-word "Thanks" as "Thx" is a style change, not a mishearing.
+fn term_fix(p: &[&str], f: &[&str], gap: &Gap, short: bool) -> Option<(String, String)> {
     let heard = &p[gap.heard.clone()];
     if heard.len() > 2 || gap.fixed.len() != 1 {
         return None;
     }
     let word = f[gap.fixed.start];
+    if short && heard.len() < 2 && !word.chars().skip(1).any(|c| c.is_uppercase() || c.is_ascii_digit()) {
+        return None;
+    }
     let heard_text = heard.join(" ");
     let ok = word.chars().count() >= 3
         && looks_like_term(word)
@@ -271,7 +339,11 @@ fn case_fix(heard: &str, word: &str) -> Option<(String, String)> {
 pub fn find_corrections(pasted: &str, field: &str) -> Vec<(String, String)> {
     let p: Vec<&str> = pasted.split_whitespace().map(core).filter(|w| !w.is_empty()).collect();
     let f_all: Vec<&str> = field.split_whitespace().map(core).filter(|w| !w.is_empty()).collect();
-    if p.len() < 3 || p.len() > 300 || f_all.is_empty() {
+    // A paste of one or two words has no words around a fix to line up
+    // with, so it's only checked when the box holds little else ("Supa
+    // base" sent on its own and fixed to "Supabase").
+    let short = p.len() < 3;
+    if p.is_empty() || p.len() > 300 || f_all.is_empty() || (short && f_all.len() > p.len() + 1) {
         return vec![];
     }
     let f = &f_all[f_all.len().saturating_sub(4000)..];
@@ -300,29 +372,33 @@ pub fn find_corrections(pasted: &str, field: &str) -> Vec<(String, String)> {
         }
     }
     // The pasted sentence must have survived mostly intact, or it was a rewrite.
-    if pairs.len() * 10 < n * 7 {
+    if !short && pairs.len() * 10 < n * 7 {
         return vec![];
     }
 
     // The runs between matched words. At either end of the paste the field
     // may go on with other text, so only one typed word is considered there.
     let mut gaps = Vec::new();
-    let (first, last) = (pairs[0], pairs[pairs.len() - 1]);
-    if first.0 > 0 && first.1 > 0 {
-        gaps.push(Gap { heard: 0..first.0, fixed: first.1 - 1..first.1, left: None, right: Some(0) });
-    }
-    for (k, w) in pairs.windows(2).enumerate() {
-        let ((pi, fj), (pi2, fj2)) = (w[0], w[1]);
-        gaps.push(Gap { heard: pi + 1..pi2, fixed: fj + 1..fj2, left: Some(k), right: Some(k + 1) });
-    }
-    if last.0 + 1 < n && last.1 + 1 < m {
-        gaps.push(Gap { heard: last.0 + 1..n, fixed: last.1 + 1..last.1 + 2, left: Some(pairs.len() - 1), right: None });
+    if pairs.is_empty() {
+        gaps.push(Gap { heard: 0..n, fixed: 0..m, left: None, right: None });
+    } else {
+        let (first, last) = (pairs[0], pairs[pairs.len() - 1]);
+        if first.0 > 0 && first.1 > 0 {
+            gaps.push(Gap { heard: 0..first.0, fixed: first.1 - 1..first.1, left: None, right: Some(0) });
+        }
+        for (k, w) in pairs.windows(2).enumerate() {
+            let ((pi, fj), (pi2, fj2)) = (w[0], w[1]);
+            gaps.push(Gap { heard: pi + 1..pi2, fixed: fj + 1..fj2, left: Some(k), right: Some(k + 1) });
+        }
+        if last.0 + 1 < n && last.1 + 1 < m {
+            gaps.push(Gap { heard: last.0 + 1..n, fixed: last.1 + 1..last.1 + 2, left: Some(pairs.len() - 1), right: None });
+        }
     }
 
     let mut found: Vec<(String, String)> = gaps
         .iter()
         .filter(|g| !g.heard.is_empty() && !g.fixed.is_empty())
-        .filter_map(|g| number_fix(&p, f, &pairs, g).or_else(|| term_fix(&p, f, g)))
+        .filter_map(|g| number_fix(&p, f, &pairs, g).or_else(|| term_fix(&p, f, g, short)))
         .collect();
     found.extend(pairs.iter().filter_map(|&(pi, fj)| case_fix(p[pi], f[fj])));
     found.dedup();
@@ -359,6 +435,24 @@ mod tests {
         assert_eq!(got, vec![("Nifty fifty Solutions".to_string(), "Nifty 50 Solutions".to_string())]);
         let got = find_corrections("We finally moved to Windows eleven.", "We finally moved to Windows 11. Next line.");
         assert_eq!(got, vec![("Windows eleven".to_string(), "Windows 11".to_string())]);
+    }
+
+    #[test]
+    fn learns_a_short_message_fixed_on_its_own() {
+        let got = find_corrections("Supa base", "Supabase");
+        assert_eq!(got, vec![("Supa base".to_string(), "Supabase".to_string())]);
+        let got = find_corrections("Nifty fifty.", "Nifty 50");
+        assert_eq!(got, vec![("Nifty fifty".to_string(), "Nifty 50".to_string())]);
+        // A one-word restyle, or a short paste inside other typed text, isn't learned.
+        assert!(find_corrections("Thanks.", "Thx").is_empty());
+        assert!(find_corrections("Supa base", "Earlier I wrote about Supabase").is_empty());
+    }
+
+    #[test]
+    fn a_sent_message_is_judged_by_the_reading_at_enter() {
+        assert!(holds_paste("I pushed it to supa base.", "I pushed it to Supabase."));
+        assert!(!holds_paste("I pushed it to supa base.", ""));
+        assert!(!holds_paste("Supa base", "Supabase"));
     }
 
     #[test]
