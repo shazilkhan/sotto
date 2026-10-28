@@ -1,4 +1,4 @@
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Wry};
 
@@ -9,6 +9,7 @@ use crate::settings::Settings;
 const TRAY_ID: &str = "main";
 
 struct StatusItem(MenuItem<Wry>);
+struct HandsFreeItem(CheckMenuItem<Wry>);
 
 fn hotkey_label(settings: &Settings) -> &'static str {
     crate::hotkey::label_for(&settings.hotkey)
@@ -16,6 +17,7 @@ fn hotkey_label(settings: &Settings) -> &'static str {
 
 fn status_text(status: Status, settings: &Settings) -> String {
     match status {
+        Status::Idle if settings.hands_free_mode => format!("Tap {} to start and stop", hotkey_label(settings)),
         Status::Idle => format!("Hold {} to dictate", hotkey_label(settings)),
         Status::Recording => "Listening…".into(),
         Status::Transcribing => "Transcribing…".into(),
@@ -26,6 +28,7 @@ fn status_text(status: Status, settings: &Settings) -> String {
 pub fn build(app: &AppHandle, settings: &Settings) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", status_text(Status::Idle, settings), false, None::<&str>)?;
     let copy_last = MenuItem::with_id(app, "copy-last", "Copy last transcript", true, None::<&str>)?;
+    let hands_free = CheckMenuItem::with_id(app, "hands-free", "Hands-free mode", true, settings.hands_free_mode, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Sotto", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Sotto", true, None::<&str>)?;
     let menu = Menu::with_items(
@@ -33,6 +36,7 @@ pub fn build(app: &AppHandle, settings: &Settings) -> tauri::Result<()> {
         &[
             &status,
             &PredefinedMenuItem::separator(app)?,
+            &hands_free,
             &copy_last,
             &open,
             &PredefinedMenuItem::separator(app)?,
@@ -40,6 +44,7 @@ pub fn build(app: &AppHandle, settings: &Settings) -> tauri::Result<()> {
         ],
     )?;
     app.manage(StatusItem(status));
+    app.manage(HandsFreeItem(hands_free));
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icons::render(Icon::Idle))
@@ -55,6 +60,7 @@ pub fn build(app: &AppHandle, settings: &Settings) -> tauri::Result<()> {
                 }
             }
             "open" => crate::open_app(app, None),
+            "hands-free" => crate::toggle_hands_free(app),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -81,6 +87,9 @@ pub fn show_status(app: &AppHandle, status: Status, settings: &Settings) {
     }
     if let Some(item) = app.try_state::<StatusItem>() {
         let _ = item.0.set_text(text);
+    }
+    if let Some(item) = app.try_state::<HandsFreeItem>() {
+        let _ = item.0.set_checked(settings.hands_free_mode);
     }
 }
 

@@ -74,6 +74,7 @@ pub enum PillEvent {
     OpenSettings,
     CopyLast,
     ToggleTalkingOnly,
+    ToggleHandsFree,
     Quit,
     Moved { x: i32, y: i32 },
 }
@@ -83,6 +84,8 @@ struct Shared {
     since: Instant,
     mode: String,
     label: String,
+    /// Hands-free mode: the hover hint says "tap" instead of "hold".
+    tap: bool,
     reset_pos: bool,
 }
 
@@ -159,6 +162,11 @@ pub fn demo() {
         pause(1600);
         set(PillState::Message { text: "No microphone".into(), error: true, ttl_ms: Some(2600) });
     });
+}
+
+pub fn set_tap_mode(on: bool) {
+    with_shared(|s| s.tap = on);
+    post_sync();
 }
 
 pub fn reset_position() {
@@ -367,6 +375,10 @@ impl Pill {
             .unwrap_or((PillState::Idle, Instant::now(), "always".into(), "Right Ctrl".into()))
     }
 
+    fn hint() -> &'static str {
+        if with_shared(|s| s.tap).unwrap_or(false) { "tap to talk" } else { "hold to talk" }
+    }
+
     /// Applies the shared state: visibility, timers, then a repaint.
     fn sync(&mut self) {
         if with_shared(|s| std::mem::take(&mut s.reset_pos)) == Some(true) {
@@ -519,7 +531,7 @@ impl Pill {
         let content_w = match state {
             PillState::Idle => {
                 let key = self.text_width(label, true) + 14.0 * s;
-                key + gap + self.text_width("hold to talk", false)
+                key + gap + self.text_width(Pill::hint(), false)
             }
             PillState::Listening { muted, hands_free } => {
                 let mut cw = bars_w + gap + self.text_width(&time, true);
@@ -558,7 +570,7 @@ impl Pill {
                 self.rrect(x, cy - 11.0 * s, x + kw, cy + 11.0 * s, 5.0 * s, KEY_BG, 1.0);
                 self.text(label, true, x + 7.0 * s, cy, PAPER, 1.0);
                 x += kw + gap;
-                self.text("hold to talk", false, x, cy, PAPER, 1.0);
+                self.text(Pill::hint(), false, x, cy, PAPER, 1.0);
             }
             PillState::Listening { muted, hands_free } => {
                 if *hands_free {
@@ -621,14 +633,15 @@ fn cursor() -> (i32, i32) {
 }
 
 fn show_menu(hwnd: HWND) {
-    let talking_only = with_shared(|s| s.mode == "talking").unwrap_or(false);
+    let (talking_only, tap) = with_shared(|s| (s.mode == "talking", s.tap)).unwrap_or((false, false));
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         let _ = AppendMenuW(menu, MF_STRING, 1, w!("Open Sotto"));
         let _ = AppendMenuW(menu, MF_STRING, 2, w!("Copy last transcript"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let flags = if talking_only { MF_STRING | MF_CHECKED } else { MF_STRING };
-        let _ = AppendMenuW(menu, flags, 3, w!("Show only while talking"));
+        let checked = |on: bool| if on { MF_STRING | MF_CHECKED } else { MF_STRING };
+        let _ = AppendMenuW(menu, checked(tap), 5, w!("Hands-free mode"));
+        let _ = AppendMenuW(menu, checked(talking_only), 3, w!("Show only while talking"));
         let _ = AppendMenuW(menu, MF_STRING, 4, w!("Quit Sotto"));
         let (x, y) = cursor();
         // The menu needs the foreground to close on an outside click.
@@ -640,6 +653,7 @@ fn show_menu(hwnd: HWND) {
             1 => emit(PillEvent::OpenApp),
             2 => emit(PillEvent::CopyLast),
             3 => emit(PillEvent::ToggleTalkingOnly),
+            5 => emit(PillEvent::ToggleHandsFree),
             4 => emit(PillEvent::Quit),
             _ => {}
         }
@@ -746,12 +760,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 }
 
 /// Creates the pill on its own thread. `pos` is a saved underline position.
-pub fn start(mode: &str, label: &str, pos: Option<(i32, i32)>, events: Box<dyn Fn(PillEvent) + Send + Sync>) {
+pub fn start(mode: &str, label: &str, tap: bool, pos: Option<(i32, i32)>, events: Box<dyn Fn(PillEvent) + Send + Sync>) {
     *SHARED.lock().unwrap() = Some(Shared {
         state: PillState::Idle,
         since: Instant::now(),
         mode: mode.to_string(),
         label: label.to_string(),
+        tap,
         reset_pos: false,
     });
     let _ = EVENTS.set(events);

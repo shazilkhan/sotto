@@ -23,3 +23,13 @@
 {"note": "actually is not a correction", "raw": "Actually, the report is already done.", "expected": "Actually, the report is already done."}
 {"note": "no is not a correction", "raw": "No, we can't ship on Friday.", "expected": "No, we can't ship on Friday."}
 {"note": "already clean", "raw": "The meeting is at 4 PM in the main office.", "expected": "The meeting is at 4 PM in the main office."}
+{"note": "triple repeated phrase", "raw": "You know what, you know what, you know what, let's ship it.", "expected": "You know what, let's ship it."}
+{"note": "spoken shortcut with plus", "raw": "Press control plus C to copy it.", "expected": "Press Ctrl+C to copy it."}
+{"note": "spoken shortcut without plus", "raw": "Just alt tab back to it.", "expected": "Just Alt+Tab back to it."}
+{"note": "shift as a verb stays", "raw": "Can we shift a meeting to Friday?", "expected": "Can we shift a meeting to Friday?"}
+{"note": "control panel stays", "raw": "Open the control panel.", "expected": "Open the control panel."}
+{"note": "spoken quote", "raw": "She said quote ship it today end quote and left.", "expected": "She said \"ship it today\" and left."}
+{"note": "quote unquote stays", "raw": "The so-called quote unquote experts.", "expected": "The so-called quote unquote experts."}
+{"note": "spoken bullets", "raw": "Shopping list. Bullet point eggs. Bullet point milk. Next bullet bread.", "expected": "Shopping list.\n- Eggs\n- Milk\n- Bread"}
+{"note": "bullet as a word stays", "raw": "Add a bullet point here.", "expected": "Add a bullet point here."}
+{"note": "spelled-out number in context (AI tier)", "raw": "We have fifty signups and one of them is from Lisbon.", "expected": "We have 50 signups and one of them is from Lisbon."}

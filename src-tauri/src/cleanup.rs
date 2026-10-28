@@ -29,7 +29,7 @@ fn filler_regex() -> &'static Regex {
 /// ("went well, um, and" keeps its comma; "should, uh, ship" loses it).
 const CONJUNCTIONS: &[&str] = &["and", "but", "or", "so", "because", "then", "which", "while"];
 /// Doubled words that are often correct ("I know that that works").
-const REAL_DOUBLES: &[&str] = &["that", "had"];
+const REAL_DOUBLES: &[&str] = &["that", "had", "bye", "so", "very"];
 const TERMINALS: &[&str] = &[
     "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "wezterm-gui.exe",
     "alacritty.exe", "conhost.exe", "mintty.exe", "warp.exe", "tabby.exe", "hyper.exe",
@@ -45,7 +45,13 @@ pub fn clean(raw: &str, ctx: &Context) -> String {
         return text.to_string();
     }
     let text = spoken_breaks(text);
-    let text = text.lines().map(|l| collapse_repeats(&remove_fillers(l))).collect::<Vec<_>>().join("\n");
+    let text = text
+        .lines()
+        .map(|l| collapse_repeats(&collapse_phrases(&remove_fillers(l))))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let text = spoken_quotes(&text);
+    let text = key_combos(&text);
     let text = apply_dictionary(&text, &ctx.dictionary);
     fit_app(text.trim(), ctx.app.as_deref())
 }
@@ -145,10 +151,126 @@ fn collapse_repeats(line: &str) -> String {
     out.join(" ")
 }
 
+/// "you know what, you know what, you know what" -> "you know what".
+/// Repeats of 2-6 words in a row are dropped, keeping the last one's
+/// punctuation.
+fn collapse_phrases(line: &str) -> String {
+    let mut words: Vec<String> = line.split_whitespace().map(str::to_string).collect();
+    for n in (2..=6).rev() {
+        let mut i = 0;
+        while i + 2 * n <= words.len() {
+            let same = (0..n).all(|k| {
+                let (a, b) = (core(&words[i + k]).to_lowercase(), core(&words[i + n + k]).to_lowercase());
+                !a.is_empty() && a == b
+            });
+            if same {
+                let tail = trailing_punct(&words[i + 2 * n - 1]).to_string();
+                let last = &mut words[i + n - 1];
+                let bare = last.trim_end_matches(|c: char| !c.is_alphanumeric()).to_string();
+                *last = bare + &tail;
+                words.drain(i + n..i + 2 * n);
+            } else {
+                i += 1;
+            }
+        }
+    }
+    words.join(" ")
+}
+
+fn quotes_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        RegexBuilder::new(r"\b(?:open\s+)?quote\b,?\s+(?P<body>.+?)[,.]?\s+(?:end\s+quote|close\s+quote|unquote)\b")
+            .case_insensitive(true)
+            .build()
+            .expect("valid regex")
+    })
+}
+
+/// "quote hello world end quote" -> "hello world" in quotation marks.
+/// Needs both the opening and the closing word, so "quote unquote" and a
+/// lone "quote" are left alone.
+fn spoken_quotes(text: &str) -> String {
+    quotes_regex().replace_all(text, |c: &Captures| format!("\"{}\"", &c["body"])).into_owned()
+}
+
+fn combo_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        RegexBuilder::new(
+            r"\b(?P<mods>(?:(?:control|ctrl|alt|shift|windows|win|command|cmd|option)\s*(?:\+|-|\bplus\b)?\s*)+)(?P<key>f1[0-2]|f[1-9]|page\s+up|page\s+down|print\s+screen|backspace|spacebar|space|enter|return|tab|escape|esc|delete|del|home|end|insert|up|down|left|right|[a-z0-9])\b",
+        )
+        .case_insensitive(true)
+        .build()
+        .expect("valid regex")
+    })
+}
+
+/// "control plus C" -> "Ctrl+C", "alt tab" -> "Alt+Tab". Without a spoken
+/// "plus" it only fires for unambiguous keys, so "shift a meeting" and
+/// "control panel" stay as words.
+fn key_combos(text: &str) -> String {
+    combo_regex()
+        .replace_all(text, |c: &Captures| {
+            let whole = &c[0];
+            let mods_text = c["mods"].to_lowercase();
+            let explicit = mods_text.contains('+') || mods_text.contains('-') || mods_text.contains("plus");
+            let mods: Vec<&str> = mods_text
+                .split(|ch: char| ch.is_whitespace() || ch == '+' || ch == '-')
+                .filter(|w| !w.is_empty() && *w != "plus")
+                .map(|m| match m {
+                    "control" | "ctrl" => "Ctrl",
+                    "alt" => "Alt",
+                    "shift" => "Shift",
+                    "windows" | "win" => "Win",
+                    "command" | "cmd" => "Cmd",
+                    _ => "Option",
+                })
+                .collect();
+            let key_raw = c["key"].to_lowercase();
+            let key_raw = key_raw.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !explicit {
+                // Spoken without "plus": only Ctrl/Alt/Win with a letter,
+                // digit, F-key or a few named keys.
+                let strong = mods.iter().all(|m| matches!(*m, "Ctrl" | "Alt" | "Win"));
+                let single = key_raw.chars().count() == 1;
+                let named = matches!(key_raw.as_str(), "tab" | "enter" | "escape" | "esc" | "delete" | "del" | "backspace")
+                    || (key_raw.starts_with('f') && key_raw.len() > 1);
+                let letter_ok = single && (mods.contains(&"Ctrl") || !matches!(key_raw.as_str(), "a" | "i"));
+                if !strong || !(letter_ok || named) {
+                    return whole.to_string();
+                }
+            }
+            let key = match key_raw.as_str() {
+                "enter" | "return" => "Enter".to_string(),
+                "escape" | "esc" => "Esc".to_string(),
+                "delete" | "del" => "Delete".to_string(),
+                "space" | "spacebar" => "Space".to_string(),
+                "page up" => "PgUp".to_string(),
+                "page down" => "PgDn".to_string(),
+                "print screen" => "PrtSc".to_string(),
+                k if k.chars().count() == 1 || k.starts_with('f') => k.to_uppercase(),
+                k => capitalize(k),
+            };
+            let mut parts: Vec<&str> = Vec::new();
+            for m in mods {
+                if !parts.contains(&m) {
+                    parts.push(m);
+                }
+            }
+            // Keep the space that preceded the key if the regex ate it.
+            let trailing = if whole.ends_with(char::is_whitespace) { " " } else { "" };
+            format!("{}+{key}{trailing}", parts.join("+"))
+        })
+        .into_owned()
+}
+
 fn breaks_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        RegexBuilder::new(r"(?:^|(?P<end>[.!?])|[,;:])\s*new\s+(?P<kind>paragraph|line)\s*(?:[.,;:!?]+|$)\s*")
+        RegexBuilder::new(
+            r"(?:^|(?P<end>[.!?])|[,;:])\s*(?:new\s+(?P<kind>paragraph|line)\s*(?:[.,;:!?]+|$)\s*|(?:next\s+|new\s+)?bullet(?:\s+point\b)?(?:\s*[,.:;]+\s*|\s+)(?P<first>[A-Za-z][\w'-]*))",
+        )
             .case_insensitive(true)
             .build()
             .expect("valid regex")
@@ -160,16 +282,33 @@ fn breaks_regex() -> &'static Regex {
 fn spoken_breaks(text: &str) -> String {
     let replaced = breaks_regex().replace_all(text, |c: &Captures| {
         let end = c.name("end").map(|m| m.as_str()).unwrap_or("");
-        let brk = if c["kind"].eq_ignore_ascii_case("paragraph") { "\n\n" } else { "\n" };
-        format!("{end}{brk}")
+        match c.name("kind") {
+            Some(k) if k.as_str().eq_ignore_ascii_case("paragraph") => format!("{end}\n\n"),
+            Some(_) => format!("{end}\n"),
+            // "Bullet points are great" is a sentence, not a command.
+            None if c["first"].eq_ignore_ascii_case("points") => c[0].to_string(),
+            // The bullet pattern consumed the item's first word; put it back.
+            None => format!("{end}\n- {}", &c["first"]),
+        }
     });
     if !replaced.contains('\n') {
         return replaced.into_owned();
     }
-    let lines: Vec<String> = replaced.trim().split('\n').map(|l| capitalize(l.trim())).collect();
+    let lines: Vec<String> = replaced
+        .trim()
+        .split('\n')
+        .map(|l| {
+            let l = l.trim();
+            match l.strip_prefix("- ") {
+                // List items: capitalised, no trailing full stop.
+                Some(item) => format!("- {}", capitalize(item.trim().trim_end_matches(['.', ',']))),
+                None => capitalize(l),
+            }
+        })
+        .collect();
     // A dictated list of short items ("new line" only, never paragraphs)
     // loses the full stop on each item.
-    let short = !lines.iter().any(|l| l.is_empty())
+    let short = !lines.iter().any(|l| l.is_empty() || l.starts_with("- "))
         && lines.iter().all(|l| l.split_whitespace().count() <= 3);
     lines
         .into_iter()
@@ -390,6 +529,40 @@ mod tests {
         assert_eq!(clean("Sounds good, see you then.", &chat), "Sounds good, see you then");
         assert_eq!(clean("Done. See you then.", &chat), "Done. See you then.");
         assert_eq!(clean("Really?", &chat), "Really?");
+    }
+
+    #[test]
+    fn repeated_phrases_collapse() {
+        assert_eq!(light("You know what, you know what, you know what, let's ship it."), "You know what, let's ship it.");
+        assert_eq!(light("We need to, we need to fix the login first."), "We need to fix the login first.");
+        assert_eq!(light("It is what it is."), "It is what it is.");
+        assert_eq!(light("Bye bye."), "Bye bye.");
+    }
+
+    #[test]
+    fn key_combos_become_shortcuts() {
+        assert_eq!(light("Press control plus C to copy it."), "Press Ctrl+C to copy it.");
+        assert_eq!(light("Then hit control shift plus T."), "Then hit Ctrl+Shift+T.");
+        assert_eq!(light("Just alt tab back to it."), "Just Alt+Tab back to it.");
+        assert_eq!(light("Use control Z to undo."), "Use Ctrl+Z to undo.");
+        assert_eq!(light("Close it with alt plus F4."), "Close it with Alt+F4.");
+        assert_eq!(light("Open the control panel."), "Open the control panel.");
+        assert_eq!(light("Can we shift a meeting to Friday?"), "Can we shift a meeting to Friday?");
+        assert_eq!(light("Add alt text to the image."), "Add alt text to the image.");
+    }
+
+    #[test]
+    fn spoken_quotes_need_both_ends() {
+        assert_eq!(light("She said quote ship it today end quote and left."), "She said \"ship it today\" and left.");
+        assert_eq!(light("The so-called quote unquote experts."), "The so-called quote unquote experts.");
+        assert_eq!(light("Can you quote me a price?"), "Can you quote me a price?");
+    }
+
+    #[test]
+    fn spoken_bullets() {
+        assert_eq!(light("Shopping list. Bullet point eggs. Bullet point milk. Next bullet bread."), "Shopping list.\n- Eggs\n- Milk\n- Bread");
+        assert_eq!(light("Add a bullet point here."), "Add a bullet point here.");
+        assert_eq!(light("Bullet points are great."), "Bullet points are great.");
     }
 
     #[test]

@@ -184,6 +184,15 @@ fn save(shared: &Shared, update: impl FnOnce(&mut Settings)) -> Settings {
     s.clone()
 }
 
+/// Flips hands-free mode from the tray or the pill menu.
+pub fn toggle_hands_free(app: &AppHandle) {
+    let shared = app.state::<Arc<Shared>>();
+    let s = save(&shared, |s| s.hands_free_mode = !s.hands_free_mode);
+    pill::set_tap_mode(s.hands_free_mode);
+    tray::show_status(app, *shared.status.lock().unwrap(), &s);
+    emit_state(app);
+}
+
 fn on_pill_event(app: &AppHandle, ev: PillEvent) {
     let shared = app.state::<Arc<Shared>>();
     match ev {
@@ -203,6 +212,7 @@ fn on_pill_event(app: &AppHandle, ev: PillEvent) {
             pill::set_mode(&s.pill_mode);
             emit_state(app);
         }
+        PillEvent::ToggleHandsFree => toggle_hands_free(app),
         PillEvent::StopListening => {
             let _ = shared.tx.send(Msg::StopHandsFree);
         }
@@ -259,6 +269,9 @@ async fn save_settings(app: AppHandle, shared: State<'_, Arc<Shared>>, settings:
     }
     if old.pill_mode != s.pill_mode {
         pill::set_mode(&s.pill_mode);
+    }
+    if old.hands_free_mode != s.hands_free_mode {
+        pill::set_tap_mode(s.hands_free_mode);
     }
     if old.history_days != s.history_days {
         transcripts::maintain(s.history_days, now_secs());
@@ -421,7 +434,7 @@ fn main() {
             {
                 let events = handle.clone();
                 let pos = s.pill_x.zip(s.pill_y);
-                pill::start(&s.pill_mode, hotkey::label_for(&s.hotkey), pos, Box::new(move |ev| on_pill_event(&events, ev)));
+                pill::start(&s.pill_mode, hotkey::label_for(&s.hotkey), s.hands_free_mode, pos, Box::new(move |ev| on_pill_event(&events, ev)));
             }
             {
                 let learner = handle.clone();

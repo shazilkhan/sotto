@@ -13,7 +13,7 @@ type Settings = {
   startWithWindows: boolean;
   keepTranscripts: boolean;
   historyDays: number;
-  handsFree: boolean;
+  handsFreeMode: boolean;
   learnCorrections: boolean;
   pillMode: "always" | "talking" | "never";
   pillX: number | null;
@@ -47,7 +47,7 @@ type Toggle =
   | "startWithWindows"
   | "trailingSpace"
   | "keepTranscripts"
-  | "handsFree"
+  | "handsFreeMode"
   | "learnCorrections";
 
 const VIEWS = ["home", "history", "dictionary", "settings"] as const;
@@ -66,7 +66,7 @@ const hist = { query: "", items: [] as HistoryItem[], total: 0, loadedTotal: -1 
 const CLEAN_NOTES = {
   off: "Pasted exactly as heard.",
   light:
-    "Removes um, uh, ah and other hesitations, collapses stutters, fixes names from your Dictionary, and drops the full stop on one-line chat messages. Instant, and it runs on this PC.",
+    "Removes um, uh and ah, drops repeated words and phrases, fixes names from your Dictionary, writes spoken shortcuts as Ctrl+C, and understands \"new line\", \"bullet point\" and \"quote … end quote\". Instant, and it runs on this PC.",
 };
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) {
@@ -208,6 +208,8 @@ function renderRecent(s: UiState) {
 
 function renderHome(s: UiState) {
   $("home-key").textContent = hotkeyLabel(s);
+  $("home-verb").textContent = s.settings.handsFreeMode ? "Tap" : "Hold";
+  $("home-tail").textContent = s.settings.handsFreeMode ? "to talk, tap again to finish." : "and talk.";
   const dl = s.download;
   $("setup").hidden = s.modelInstalled;
   if (!s.modelInstalled) {

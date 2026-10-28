@@ -52,7 +52,7 @@
               <button type="button" class="btn" id="setup-retry" hidden>Try again</button>
             </div>
             <header class="page-head">
-              <h1 id="home-h">Hold <span class="kbd" id="home-key">Right Ctrl</span> and talk.</h1>
+              <h1 id="home-h"><span id="home-verb">Hold</span> <span class="kbd" id="home-key">Right Ctrl</span> <span id="home-tail">and talk.</span></h1>
               <p>Let go and your words appear wherever the cursor is. Other apps go quiet while you talk. <a href="#settings" data-view="settings">Change shortcut</a></p>
             </header>
             <section class="stats" aria-label="This week">
@@ -134,8 +134,8 @@
                   <span class="seg" role="group" aria-label="Shortcut" id="key-seg"></span>
                 </div>
                 <label class="row">
-                  <span class="name">Hands-free<small>Double-tap the shortcut to keep listening without holding it. Tap it again, or click the pill, to finish. Esc cancels.</small></span>
-                  <input type="checkbox" class="sw" data-toggle="handsFree" />
+                  <span class="name">Hands-free mode<small>Tap your shortcut to start and tap it again to finish, so you don't have to hold it. Holding still works for a quick burst, and Esc cancels. Also in the tray and pill menus.</small></span>
+                  <input type="checkbox" class="sw" data-toggle="handsFreeMode" />
                 </label>
               </div>
             </section>

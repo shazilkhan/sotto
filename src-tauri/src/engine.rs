@@ -25,10 +25,9 @@ use crate::{cleanup, clipboard, context, learn, model, mute, sounds, stats, tran
 const TAIL: Duration = Duration::from_millis(150);
 /// Shorter recordings are treated as accidental taps.
 const MIN_SECS: f32 = 0.3;
-/// A press released sooner than this is a tap, not a hold.
-const TAP_MAX: Duration = Duration::from_millis(300);
-/// A second tap within this window locks hands-free listening.
-const DOUBLE_TAP: Duration = Duration::from_millis(400);
+/// In hands-free mode, a press released sooner than this is a tap that
+/// keeps listening; a longer press is an ordinary hold.
+const TAP_MAX: Duration = Duration::from_millis(350);
 const MAX_RECORDING: Duration = Duration::from_secs(10 * 60);
 /// How long the Settings mic test keeps the mic open.
 const MIC_TEST: Duration = Duration::from_secs(6);
@@ -196,10 +195,9 @@ struct Engine {
     focused_app: Option<String>,
     muted: Option<mute::Muted>,
     muted_count: u32,
-    /// Locked on by a double-tap; the next press (or a pill click) stops it.
+    /// Listening after a tap in hands-free mode; the next press (or a pill
+    /// click) finishes it.
     hands_free: bool,
-    /// Set when a press was a quick tap: wait briefly for a second tap.
-    tap_wait: Option<Instant>,
     pending: usize,
     last_used: Instant,
 }
@@ -229,9 +227,6 @@ impl Engine {
         if let Some((_, started)) = &self.mic_test {
             wait = wait.min(MIC_TEST.saturating_sub(started.elapsed()));
         }
-        if let Some(tapped) = self.tap_wait {
-            wait = wait.min(DOUBLE_TAP.saturating_sub(tapped.elapsed()));
-        }
         let keep = self.shared.settings.read().unwrap().keep_model_mins;
         if keep > 0 && self.pending == 0 && self.recording.is_none() && self.shared.model_loaded() {
             let deadline = Duration::from_secs(keep as u64 * 60);
@@ -244,11 +239,6 @@ impl Engine {
         if self.recording.as_ref().is_some_and(|(_, s)| s.elapsed() >= MAX_RECORDING) {
             log::info!("hit the {} min limit, stopping", MAX_RECORDING.as_secs() / 60);
             self.finish();
-        }
-        if self.tap_wait.is_some_and(|t| t.elapsed() >= DOUBLE_TAP) {
-            // A single quick tap: nothing to dictate.
-            self.tap_wait = None;
-            self.discard();
         }
         if self.mic_test.as_ref().is_some_and(|(_, s)| s.elapsed() >= MIC_TEST) {
             self.mic_test = None;
@@ -276,11 +266,6 @@ impl Engine {
         if self.recording.is_some() {
             if self.hands_free {
                 self.finish();
-            } else if self.tap_wait.take().is_some() {
-                self.hands_free = true;
-                hotkey::HANDS_FREE.store(true, Ordering::Relaxed);
-                pill::set(PillState::Listening { muted: self.muted_count, hands_free: true });
-                log::info!("hands-free on");
             }
             return;
         }
@@ -336,11 +321,14 @@ impl Engine {
 
     fn on_released(&mut self) {
         let Some((_, started)) = &self.recording else { return };
-        if self.hands_free || self.tap_wait.is_some() {
+        if self.hands_free {
             return;
         }
-        if self.shared.settings().hands_free && started.elapsed() < TAP_MAX {
-            self.tap_wait = Some(Instant::now());
+        if self.shared.settings().hands_free_mode && started.elapsed() < TAP_MAX {
+            // A tap: keep listening until the next press.
+            self.hands_free = true;
+            hotkey::HANDS_FREE.store(true, Ordering::Relaxed);
+            pill::set(PillState::Listening { muted: self.muted_count, hands_free: true });
             return;
         }
         self.finish();
@@ -348,11 +336,10 @@ impl Engine {
 
     fn reset_hands_free(&mut self) {
         self.hands_free = false;
-        self.tap_wait = None;
         hotkey::HANDS_FREE.store(false, Ordering::Relaxed);
     }
 
-    /// Stops without transcribing (a stray tap, Esc, another key).
+    /// Stops without transcribing (Esc, or another key joined the chord).
     fn discard(&mut self) {
         self.reset_hands_free();
         if self.stop_recording().is_some() {
@@ -514,7 +501,6 @@ pub fn run(app: AppHandle, shared: Arc<Shared>, rx: Receiver<Msg>) {
         muted: None,
         muted_count: 0,
         hands_free: false,
-        tap_wait: None,
         pending: 0,
         last_used: Instant::now(),
     };

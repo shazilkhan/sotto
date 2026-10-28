@@ -22,8 +22,9 @@ pub struct Settings {
     pub keep_transcripts: bool,
     /// Days of history to keep; -1 keeps everything.
     pub history_days: i32,
-    /// Double-tap the shortcut to keep listening without holding it.
-    pub hands_free: bool,
+    /// Tap the shortcut to start and tap again to finish, instead of
+    /// holding it. Holding still works for a quick burst.
+    pub hands_free_mode: bool,
     /// Learn spellings from edits made right after a dictation is pasted.
     pub learn_corrections: bool,
     /// "always", "talking" (only while dictating) or "never".
@@ -48,7 +49,7 @@ impl Default for Settings {
             start_with_windows: true,
             keep_transcripts: true,
             history_days: -1,
-            hands_free: true,
+            hands_free_mode: false,
             learn_corrections: true,
             pill_mode: "always".into(),
             pill_x: None,
