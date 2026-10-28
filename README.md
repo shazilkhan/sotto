@@ -4,7 +4,7 @@ Push-to-talk dictation for Windows that runs entirely on your PC. Hold a
 hotkey, speak, let go, and the text is pasted wherever your cursor is. No
 account, no subscription, and no audio leaves the machine.
 
-Status: early (v0.3). Works on Windows 10/11 x64. English plus 24 European
+Status: early (v0.4). Works on Windows 10/11 x64. English plus 24 European
 languages (whatever Parakeet v3 supports).
 
 ## Why it's light
@@ -12,8 +12,8 @@ languages (whatever Parakeet v3 supports).
 A dictation app runs all day, so idle cost matters more than anything else.
 
 - **Idle:** no mic open, no model in memory, no browser engine. Measured on a
-  Ryzen 9 9900X with the floating pill on screen: about 26 MB working set,
-  8 MB private memory, 15 threads, and no measurable CPU over a minute.
+  Ryzen 9 9900X with the floating pill on screen: about 22 MB working set,
+  5 MB private memory, 9 threads, and no measurable CPU.
 - **The floating pill is not a webview.** It's a layered window drawn with
   Direct2D in software, so no GPU driver is loaded into the process and the
   GPU stays free for games. It repaints only when its state changes and
@@ -32,11 +32,11 @@ A dictation app runs all day, so idle cost matters more than anything else.
 
 Hold **Ctrl + Win** (or the shortcut you pick), talk, release.
 
-**Hands-free:**
-- Double-tap the shortcut and Sotto keeps listening without you holding
-  anything; the pill shows a stop square.
-- Tap the shortcut again, or click the pill, to finish and paste.
-- Esc cancels.
+**Hands-free mode** (Settings, or the tray and pill menus):
+- Tap the shortcut to start, and tap it again (or click the pill) to finish
+  and paste.
+- Holding still works for a quick burst. Esc cancels.
+- The pill shows a stop square while it's listening hands-free.
 
 The floating pill shows what's happening. Idle, it's a thin underline. While
 you talk, a pill lifts above it and the underline turns blue. The underline
@@ -76,15 +76,21 @@ similar shortcuts still work.
 microseconds:
 - drops um, uh, ah, ooh, hmm and stretched versions ("uhhh"), and fixes the
   commas around them; meaningful words like "oh", "mhm" and "ER" stay
-- collapses stutters ("I I think")
+- collapses stutters ("I I think") and repeated phrases ("you know what,
+  you know what")
+- writes spoken shortcuts as keys: "control plus C" becomes Ctrl+C, "alt
+  tab" becomes Alt+Tab ("shift a meeting" and "control panel" stay as words)
+- understands "bullet point" (list items) and "quote … end quote"
 - turns a spoken "new line" or "new paragraph" into a break
 - applies your Dictionary
 - terminals get bare commands ("git status"), and one-line chat messages
   lose the final full stop
 
-It never rewords. On the seed cases it passes 19 of 25 with no false edits.
-The rest (self-corrections like "no wait", dictated lists) are for the
-planned AI tier; see `docs/AI-CLEANUP-PLAN.md`.
+It never rewords. On the seed cases it passes 29 of 35 with no false edits.
+The rest need context, so they're for the planned AI tier (see
+`docs/AI-CLEANUP-PLAN.md`): self-corrections like "no wait", lists spoken
+without commands, and numbers ("fifty signups" should be 50, but "one of
+them" stays a word).
 
 ## How it works
 
