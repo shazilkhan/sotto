@@ -144,6 +144,11 @@ Checks:
    muting.
 3. Signed installer and auto-update.
 
+## License
+
+MIT, see [LICENSE](LICENSE). The speech model is a separate download under
+its own license (CC BY 4.0).
+
 ## Credits
 
 - Speech model: [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
