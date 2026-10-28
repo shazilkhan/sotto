@@ -19,6 +19,14 @@ pub struct Settings {
     pub start_with_windows: bool,
     /// Append each dictation to a local JSONL file for tuning cleanup.
     pub keep_transcripts: bool,
+    /// "always", "talking" (only while dictating) or "never".
+    pub pill_mode: String,
+    /// Where the pill's underline sits, in screen pixels. `None` is bottom
+    /// centre of the primary screen. Owned by the pill; the UI never sets it.
+    pub pill_x: Option<i32>,
+    pub pill_y: Option<i32>,
+    /// "off" or "light" ("smart" later).
+    pub cleanup: String,
 }
 
 impl Default for Settings {
@@ -32,6 +40,10 @@ impl Default for Settings {
             keep_model_mins: 15,
             start_with_windows: true,
             keep_transcripts: false,
+            pill_mode: "always".into(),
+            pill_x: None,
+            pill_y: None,
+            cleanup: "light".into(),
         }
     }
 }

@@ -1,7 +1,7 @@
 //! The dictation loop: hotkey down -> record (model loads in parallel) ->
-//! hotkey up -> transcribe on a worker thread -> paste. Runs on one thread
-//! that sleeps on a channel, so idle CPU is zero. The model is dropped after
-//! `keep_model_mins` of no use.
+//! hotkey up -> transcribe and clean up on a worker thread -> paste. Runs on
+//! one thread that sleeps on a channel, so idle CPU is zero. The model is
+//! dropped after `keep_model_mins` of no use.
 
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -15,15 +15,19 @@ use transcribe_rs::onnx::Quantization;
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 
 use crate::audio::{self, Recorder, TARGET_RATE};
+use crate::dictionary::Entry;
 use crate::hotkey::{self, HotkeyEvent};
+use crate::pill::{self, PillState};
 use crate::settings::Settings;
-use crate::{cleanup, clipboard, context, model, mute, sounds, transcripts};
+use crate::{cleanup, clipboard, context, model, mute, sounds, stats, transcripts};
 
 /// Keep recording briefly after release; people let go on the last syllable.
 const TAIL: Duration = Duration::from_millis(150);
 /// Shorter presses are treated as accidental taps.
 const MIN_SECS: f32 = 0.3;
 const MAX_RECORDING: Duration = Duration::from_secs(10 * 60);
+/// How long the Settings mic test keeps the mic open.
+const MIC_TEST: Duration = Duration::from_secs(6);
 /// Below this peak level the mic is effectively silent (muted mic).
 const SILENCE_PEAK: f32 = 0.003;
 const HISTORY_LEN: usize = 20;
@@ -31,6 +35,8 @@ const HISTORY_LEN: usize = 20;
 pub enum Msg {
     Hotkey(HotkeyEvent),
     Transcribed(Result<Transcript, String>),
+    /// Start (true) or stop (false) the Settings mic level test.
+    MicTest(bool),
     /// Settings changed; recompute timers.
     Wake,
 }
@@ -59,6 +65,9 @@ pub enum Status {
 #[serde(rename_all = "camelCase")]
 pub struct HistoryItem {
     pub text: String,
+    /// Before cleanup, for "copy original".
+    pub raw: String,
+    pub app: String,
     pub at: u64,
     pub audio_secs: f32,
     pub took_ms: u64,
@@ -75,6 +84,7 @@ pub struct Download {
 
 pub struct Shared {
     pub settings: RwLock<Settings>,
+    pub dictionary: RwLock<Vec<Entry>>,
     pub status: Mutex<Status>,
     pub history: Mutex<VecDeque<HistoryItem>>,
     pub download: Mutex<Download>,
@@ -91,9 +101,10 @@ fn load_model() -> Result<ParakeetModel, String> {
 }
 
 impl Shared {
-    pub fn new(settings: Settings, tx: Sender<Msg>) -> Self {
+    pub fn new(settings: Settings, dictionary: Vec<Entry>, tx: Sender<Msg>) -> Self {
         Self {
             settings: RwLock::new(settings),
+            dictionary: RwLock::new(dictionary),
             status: Mutex::new(Status::Idle),
             history: Mutex::new(VecDeque::new()),
             download: Mutex::new(Download::default()),
@@ -173,6 +184,7 @@ struct Engine {
     app: AppHandle,
     shared: Arc<Shared>,
     recording: Option<(Recorder, Instant)>,
+    mic_test: Option<(Recorder, Instant)>,
     /// App that had focus when the hotkey went down.
     focused_app: Option<String>,
     muted: Option<mute::Muted>,
@@ -202,6 +214,9 @@ impl Engine {
         if let Some((_, started)) = &self.recording {
             wait = wait.min(MAX_RECORDING.saturating_sub(started.elapsed()));
         }
+        if let Some((_, started)) = &self.mic_test {
+            wait = wait.min(MIC_TEST.saturating_sub(started.elapsed()));
+        }
         let keep = self.shared.settings.read().unwrap().keep_model_mins;
         if keep > 0 && self.pending == 0 && self.recording.is_none() && self.shared.model_loaded() {
             let deadline = Duration::from_secs(keep as u64 * 60);
@@ -215,6 +230,9 @@ impl Engine {
             log::info!("hit the {} min limit, stopping", MAX_RECORDING.as_secs() / 60);
             self.on_released();
         }
+        if self.mic_test.as_ref().is_some_and(|(_, s)| s.elapsed() >= MIC_TEST) {
+            self.mic_test = None;
+        }
         let keep = self.shared.settings.read().unwrap().keep_model_mins;
         let expired = keep >= 0 && self.last_used.elapsed() >= Duration::from_secs(keep as u64 * 60);
         if expired && self.pending == 0 && self.recording.is_none() {
@@ -222,13 +240,26 @@ impl Engine {
         }
     }
 
+    fn on_mic_test(&mut self, on: bool) {
+        self.mic_test = None;
+        if on && self.recording.is_none() {
+            let mic = self.shared.settings().mic;
+            match Recorder::start(mic.as_deref()) {
+                Ok(r) => self.mic_test = Some((r, Instant::now())),
+                Err(e) => log::warn!("mic test: {e}"),
+            }
+        }
+    }
+
     fn on_pressed(&mut self) {
         if self.recording.is_some() {
             return;
         }
+        self.mic_test = None;
         if !model::is_installed() {
+            pill::set(PillState::Message { text: "Still setting up".into(), error: false, ttl_ms: Some(2500) });
             let app = self.app.clone();
-            let _ = self.app.run_on_main_thread(move || crate::open_settings(&app));
+            let _ = self.app.run_on_main_thread(move || crate::open_app(&app, None));
             return;
         }
         self.focused_app = context::foreground_exe();
@@ -241,9 +272,11 @@ impl Engine {
             }
             Err(e) => {
                 log::error!("could not open mic: {e}");
+                pill::set(PillState::Message { text: "No microphone".into(), error: true, ttl_ms: Some(5000) });
                 return;
             }
         }
+        pill::set(PillState::Listening { muted: 0 });
         self.shared.preload();
         if s.sounds {
             sounds::start();
@@ -252,7 +285,11 @@ impl Engine {
             hotkey::suppress_start_menu();
         }
         if s.mute_while_dictating {
-            self.muted = Some(mute::mute_others());
+            let muted = mute::mute_others();
+            if muted.count() > 0 {
+                pill::set(PillState::Listening { muted: muted.count() as u32 });
+            }
+            self.muted = Some(muted);
         }
         self.refresh_status();
     }
@@ -284,20 +321,24 @@ impl Engine {
         }
         let secs = samples.len() as f32 / rate as f32;
         if secs < MIN_SECS {
+            pill::set(PillState::Idle);
             self.refresh_status();
             return;
         }
+        pill::set(PillState::Writing);
         self.pending += 1;
         self.refresh_status();
         let shared = self.shared.clone();
         let app = self.focused_app.clone();
+        let light = s.cleanup == "light";
+        let dictionary = self.shared.dictionary.read().unwrap().clone();
         std::thread::spawn(move || {
             let t = Instant::now();
             let audio = audio::resample(&samples, rate, TARGET_RATE);
             let raw = if audio::peak(&audio) < SILENCE_PEAK { Ok(String::new()) } else { shared.transcribe(&audio) };
             let took = t.elapsed();
             let result = raw.map(|raw| {
-                let text = cleanup::clean(&raw, &cleanup::Context { app: app.clone() });
+                let text = cleanup::clean(&raw, &cleanup::Context { app: app.clone(), light, dictionary });
                 Transcript { raw, text, app, audio_secs: secs, took }
             });
             let _ = shared.tx.send(Msg::Transcribed(result));
@@ -306,6 +347,7 @@ impl Engine {
 
     fn on_cancelled(&mut self) {
         if self.stop_recording().is_some() {
+            pill::set(PillState::Idle);
             self.refresh_status();
         }
     }
@@ -323,6 +365,8 @@ impl Engine {
                     out.push(' ');
                 }
                 clipboard::paste(&out);
+                pill::set(PillState::Pasted);
+                stats::record(t.text.split_whitespace().count() as u64, t.audio_secs);
                 let at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
                 if s.keep_transcripts {
                     transcripts::append(&transcripts::Entry {
@@ -331,15 +375,28 @@ impl Engine {
                         audio_secs: t.audio_secs,
                         asr_ms: took_ms,
                         cleaned: (t.text != t.raw).then(|| t.text.clone()),
-                        raw: t.raw,
+                        raw: t.raw.clone(),
                     });
                 }
                 let mut history = self.shared.history.lock().unwrap();
-                history.push_front(HistoryItem { text: t.text, at, audio_secs: t.audio_secs, took_ms });
+                history.push_front(HistoryItem {
+                    text: t.text,
+                    raw: t.raw,
+                    app: context::display_name(t.app.as_deref()),
+                    at,
+                    audio_secs: t.audio_secs,
+                    took_ms,
+                });
                 history.truncate(HISTORY_LEN);
             }
-            Ok(t) => log::info!("{:.1}s of audio, nothing heard", t.audio_secs),
-            Err(e) => log::error!("transcription failed: {e}"),
+            Ok(t) => {
+                log::info!("{:.1}s of audio, nothing heard", t.audio_secs);
+                pill::set(PillState::Message { text: "Didn't catch that".into(), error: false, ttl_ms: Some(1600) });
+            }
+            Err(e) => {
+                log::error!("transcription failed: {e}");
+                pill::set(PillState::Message { text: "Couldn't transcribe".into(), error: true, ttl_ms: Some(4000) });
+            }
         }
         if s.keep_model_mins == 0 && self.pending == 0 && self.recording.is_none() {
             self.shared.unload();
@@ -380,6 +437,7 @@ pub fn run(app: AppHandle, shared: Arc<Shared>, rx: Receiver<Msg>) {
         app,
         shared,
         recording: None,
+        mic_test: None,
         focused_app: None,
         muted: None,
         pending: 0,
@@ -392,6 +450,7 @@ pub fn run(app: AppHandle, shared: Arc<Shared>, rx: Receiver<Msg>) {
             Ok(Msg::Hotkey(HotkeyEvent::Released)) => engine.on_released(),
             Ok(Msg::Hotkey(HotkeyEvent::Cancelled)) => engine.on_cancelled(),
             Ok(Msg::Transcribed(result)) => engine.on_transcribed(result),
+            Ok(Msg::MicTest(on)) => engine.on_mic_test(on),
             Ok(Msg::Wake) => engine.refresh_status(),
             Err(RecvTimeoutError::Timeout) => engine.on_tick(),
             Err(RecvTimeoutError::Disconnected) => break,

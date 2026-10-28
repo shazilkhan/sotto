@@ -52,6 +52,10 @@ pub const PRESETS: &[(&str, &str, &[&[u32]])] = &[
     ("ctrl+shift", "Ctrl + Shift", &[CTRL, SHIFT]),
 ];
 
+pub fn label_for(id: &str) -> &'static str {
+    PRESETS.iter().find(|p| p.0 == id).unwrap_or(&PRESETS[0]).1
+}
+
 pub fn combo_for(id: &str) -> &'static [&'static [u32]] {
     PRESETS.iter().find(|p| p.0 == id).unwrap_or(&PRESETS[0]).2
 }

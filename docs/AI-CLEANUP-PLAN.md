@@ -1,9 +1,10 @@
 # AI cleanup pass: plan
 
 Status: phase 0 built 2026-10-28 (transcript log, `--bench-cleanup`,
-`eval/cases.jsonl`). Baseline with no cleanup: 9/25 seed cases pass, which
-are exactly the cases that must be left alone. Collecting real dictations
-next.
+`eval/cases.jsonl`; baseline 9/25, exactly the leave-alone cases). Most of
+phase 1 is in as of v0.2: fillers, stutters, spoken breaks, the dictionary
+and terminal/chat punctuation pass 19/25 with no false edits. Immediate
+phrase repeats are still to do. Corrections and lists wait for the AI tier.
 
 ## Goal
 

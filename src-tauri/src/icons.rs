@@ -1,5 +1,6 @@
-//! Tray icons, drawn at startup instead of shipped as files: a microphone,
-//! plain when idle, on a red disc while recording and amber while
+//! Tray icons, drawn at startup instead of shipped as files. The mark is the
+//! logo: a long line (the words) over a short pill (the voice). The pill
+//! turns into a wide blue bar while listening and a shorter one while
 //! transcribing.
 
 use tauri::image::Image;
@@ -34,66 +35,55 @@ fn taskbar_is_light() -> bool {
     r.is_ok() && value == 1
 }
 
-fn seg_dist(px: f32, py: f32, x: f32, y0: f32, y1: f32) -> f32 {
-    let cy = py.clamp(y0, y1);
-    ((px - x).powi(2) + (py - cy).powi(2)).sqrt()
-}
-
-fn in_mic(x: f32, y: f32) -> bool {
-    let capsule = seg_dist(x, y, 16.0, 9.0, 14.0) <= 5.0;
-    let r = ((x - 16.0).powi(2) + (y - 13.0).powi(2)).sqrt();
-    let arc = y >= 13.0 && (r - 9.0).abs() <= 1.15;
-    let stem = (14.9..=17.1).contains(&x) && (22.0..=26.0).contains(&y);
-    let base = (11.0..=21.0).contains(&x) && (25.8..=28.0).contains(&y);
-    capsule || arc || stem || base
-}
-
-fn in_disc(x: f32, y: f32) -> bool {
-    ((x - 16.0).powi(2) + (y - 16.0).powi(2)).sqrt() <= 15.5
+/// Inside a horizontal capsule from x0 to x1 centred on `cy` with radius `r`.
+fn in_capsule(x: f32, y: f32, x0: f32, x1: f32, cy: f32, r: f32) -> bool {
+    let cx = x.clamp(x0 + r, x1 - r);
+    (x - cx).powi(2) + (y - cy).powi(2) <= r * r
 }
 
 pub fn render(icon: Icon) -> Image<'static> {
     let light = taskbar_is_light();
-    let fg: [u8; 4] = match icon {
-        Icon::Idle if light => [32, 32, 36, 255],
-        Icon::Idle => [240, 240, 244, 255],
-        Icon::Unavailable => [140, 140, 148, 200],
-        Icon::Recording | Icon::Transcribing => [255, 255, 255, 255],
+    let line: [u8; 3] = match (icon, light) {
+        (Icon::Unavailable, _) => [140, 139, 134],
+        (_, true) => [12, 12, 13],
+        (_, false) => [243, 242, 238],
     };
-    let disc: Option<[u8; 4]> = match icon {
-        Icon::Recording => Some([229, 57, 53, 255]),
-        Icon::Transcribing => Some([245, 158, 11, 255]),
-        _ => None,
+    let pill: [u8; 3] = match (icon, light) {
+        (Icon::Unavailable, _) => [140, 139, 134],
+        (_, true) => [50, 54, 245],
+        (_, false) => [108, 112, 255],
+    };
+    let pill_end = match icon {
+        Icon::Recording => 27.0,
+        Icon::Transcribing => 21.0,
+        _ => 16.5,
     };
 
     let mut rgba = vec![0u8; SIZE * SIZE * 4];
     for py in 0..SIZE {
         for px in 0..SIZE {
-            let (mut mic, mut bg) = (0usize, 0usize);
+            let (mut a_line, mut a_pill) = (0usize, 0usize);
             for sy in 0..SS {
                 for sx in 0..SS {
                     let x = px as f32 + (sx as f32 + 0.5) / SS as f32;
                     let y = py as f32 + (sy as f32 + 0.5) / SS as f32;
-                    // The glyph shrinks a little inside the disc.
-                    let (gx, gy) = if disc.is_some() { (16.0 + (x - 16.0) * 1.35, 16.0 + (y - 16.0) * 1.35) } else { (x, y) };
-                    if in_mic(gx, gy) {
-                        mic += 1;
-                    }
-                    if in_disc(x, y) {
-                        bg += 1;
+                    if in_capsule(x, y, 5.0, 27.0, 11.5, 1.75) {
+                        a_line += 1;
+                    } else if in_capsule(x, y, 5.0, pill_end, 19.5, 3.5) {
+                        a_pill += 1;
                     }
                 }
             }
             let n = (SS * SS) as f32;
-            let (a_mic, a_bg) = (mic as f32 / n, if disc.is_some() { bg as f32 / n } else { 0.0 });
-            let base = disc.unwrap_or([0, 0, 0, 0]);
+            let (l, p) = (a_line as f32 / n, a_pill as f32 / n);
+            let alpha = (l + p).min(1.0);
             let i = (py * SIZE + px) * 4;
-            for c in 0..3 {
-                let v = fg[c] as f32 * a_mic + base[c] as f32 * (1.0 - a_mic);
-                rgba[i + c] = v as u8;
+            if alpha > 0.0 {
+                for c in 0..3 {
+                    rgba[i + c] = ((line[c] as f32 * l + pill[c] as f32 * p) / alpha) as u8;
+                }
             }
-            let alpha = (fg[3] as f32 / 255.0) * a_mic + a_bg * (1.0 - a_mic);
-            rgba[i + 3] = (alpha.min(1.0) * 255.0) as u8;
+            rgba[i + 3] = (alpha * 255.0) as u8;
         }
     }
     Image::new_owned(rgba, SIZE as u32, SIZE as u32)

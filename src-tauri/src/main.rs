@@ -4,19 +4,25 @@ mod audio;
 mod cleanup;
 mod clipboard;
 mod context;
+mod dictionary;
 mod engine;
 mod hotkey;
 mod icons;
 mod logger;
 mod model;
 mod mute;
+mod pill;
 mod settings;
 mod sounds;
+mod stats;
 mod transcripts;
 mod tray;
 
+use dictionary::Entry;
 use engine::{Download, HistoryItem, Msg, Shared, Status};
+use pill::{PillEvent, PillState};
 use settings::Settings;
+use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder};
@@ -32,6 +38,8 @@ struct UiState {
     model_bytes: u64,
     download: Download,
     history: Vec<HistoryItem>,
+    dictionary: Vec<Entry>,
+    week: stats::Week,
     transcript_count: usize,
     hotkeys: Vec<(&'static str, &'static str)>,
     version: &'static str,
@@ -41,23 +49,33 @@ pub fn emit_state(app: &AppHandle) {
     let _ = app.emit("state-changed", ());
 }
 
-/// The settings window is created on demand and destroyed on close, so no
-/// WebView2 processes run while Sotto sits in the tray.
-pub fn open_settings(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("settings") {
+/// The app window is created on demand and destroyed on close, so no
+/// WebView2 processes run while Sotto sits in the tray. `view` is "home",
+/// "dictionary" or "settings".
+pub fn open_app(app: &AppHandle, view: Option<&str>) {
+    if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
+        if let Some(view) = view {
+            let _ = w.emit("navigate", view);
+        }
         return;
     }
-    let built = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
+    let url = match view {
+        Some(v) => format!("index.html#{v}"),
+        None => "index.html".to_string(),
+    };
+    let built = WebviewWindowBuilder::new(app, "main", WebviewUrl::App(url.into()))
         .title("Sotto")
-        .inner_size(460.0, 700.0)
-        .min_inner_size(400.0, 520.0)
+        .inner_size(1100.0, 760.0)
+        .min_inner_size(760.0, 540.0)
+        .decorations(false)
+        .shadow(true)
         .center()
         .build();
     if let Err(e) = built {
-        log::error!("could not open settings: {e}");
+        log::error!("could not open the app window: {e}");
     }
 }
 
@@ -81,6 +99,8 @@ fn start_download(app: &AppHandle, shared: &Arc<Shared>) {
             if last.elapsed() > Duration::from_millis(250) {
                 last = Instant::now();
                 tray::show_download(&app, done, total);
+                let pct = if total > 0 { done * 100 / total } else { 0 };
+                pill::set(PillState::Message { text: format!("Setting up {pct}%"), error: false, ttl_ms: None });
                 emit_state(&app);
             }
         });
@@ -89,14 +109,56 @@ fn start_download(app: &AppHandle, shared: &Arc<Shared>) {
             d.active = false;
             d.error = result.as_ref().err().cloned();
         }
-        if let Err(e) = &result {
-            log::error!("model download failed: {e}");
+        match &result {
+            Ok(()) => pill::set(PillState::Message { text: "Ready".into(), error: false, ttl_ms: Some(2000) }),
+            Err(e) => {
+                log::error!("model download failed: {e}");
+                pill::set(PillState::Message { text: "Download stopped".into(), error: true, ttl_ms: None });
+            }
         }
         // Replace the progress text; Wake then moves NeedsModel to Idle.
         tray::show_status(&app, *shared.status.lock().unwrap(), &shared.settings());
         let _ = shared.tx.send(Msg::Wake);
         emit_state(&app);
     });
+}
+
+fn save(shared: &Shared, update: impl FnOnce(&mut Settings)) -> Settings {
+    let mut s = shared.settings.write().unwrap();
+    update(&mut s);
+    if let Err(e) = settings::save(&s) {
+        log::warn!("saving settings: {e}");
+    }
+    s.clone()
+}
+
+fn on_pill_event(app: &AppHandle, ev: PillEvent) {
+    let shared = app.state::<Arc<Shared>>();
+    match ev {
+        PillEvent::OpenApp | PillEvent::OpenSettings => {
+            let view = matches!(ev, PillEvent::OpenSettings).then_some("settings");
+            let handle = app.clone();
+            let _ = app.run_on_main_thread(move || open_app(&handle, view));
+        }
+        PillEvent::CopyLast => {
+            let last = shared.history.lock().unwrap().front().map(|h| h.text.clone());
+            if let Some(text) = last {
+                clipboard::copy(&text);
+            }
+        }
+        PillEvent::ToggleTalkingOnly => {
+            let s = save(&shared, |s| s.pill_mode = if s.pill_mode == "talking" { "always".into() } else { "talking".into() });
+            pill::set_mode(&s.pill_mode);
+            emit_state(app);
+        }
+        PillEvent::Quit => app.exit(0),
+        PillEvent::Moved { x, y } => {
+            save(&shared, |s| {
+                s.pill_x = Some(x);
+                s.pill_y = Some(y);
+            });
+        }
+    }
 }
 
 #[tauri::command]
@@ -109,6 +171,8 @@ async fn get_state(shared: State<'_, Arc<Shared>>) -> Result<UiState, String> {
         model_bytes: model::total_bytes(),
         download: shared.download.lock().unwrap().clone(),
         history: shared.history.lock().unwrap().iter().cloned().collect(),
+        dictionary: shared.dictionary.read().unwrap().clone(),
+        week: stats::week(),
         transcript_count: transcripts::count(),
         hotkeys: hotkey::PRESETS.iter().map(|p| (p.0, p.1)).collect(),
         version: env!("CARGO_PKG_VERSION"),
@@ -124,20 +188,59 @@ async fn list_mics() -> Result<Vec<String>, String> {
 #[tauri::command]
 async fn save_settings(app: AppHandle, shared: State<'_, Arc<Shared>>, settings: Settings) -> Result<(), String> {
     let old = shared.settings();
-    if old.hotkey != settings.hotkey {
-        hotkey::set_preset(&settings.hotkey);
-    }
     if old.start_with_windows != settings.start_with_windows {
         let autolaunch = app.autolaunch();
         let r = if settings.start_with_windows { autolaunch.enable() } else { autolaunch.disable() };
         r.map_err(|e| e.to_string())?;
     }
-    settings::save(&settings).map_err(|e| e.to_string())?;
-    *shared.settings.write().unwrap() = settings.clone();
-    tray::show_status(&app, *shared.status.lock().unwrap(), &settings);
+    // The pill owns its position; a stale copy from the UI must not move it.
+    let s = save(&shared, |s| {
+        *s = Settings { pill_x: old.pill_x, pill_y: old.pill_y, ..settings };
+    });
+    if old.hotkey != s.hotkey {
+        hotkey::set_preset(&s.hotkey);
+        pill::set_label(hotkey::label_for(&s.hotkey));
+    }
+    if old.pill_mode != s.pill_mode {
+        pill::set_mode(&s.pill_mode);
+    }
+    tray::show_status(&app, *shared.status.lock().unwrap(), &s);
     let _ = shared.tx.send(Msg::Wake);
     emit_state(&app);
     Ok(())
+}
+
+#[tauri::command]
+async fn save_dictionary(app: AppHandle, shared: State<'_, Arc<Shared>>, entries: Vec<Entry>) -> Result<(), String> {
+    let entries = dictionary::normalize(entries);
+    dictionary::save(&entries).map_err(|e| e.to_string())?;
+    *shared.dictionary.write().unwrap() = entries;
+    emit_state(&app);
+    Ok(())
+}
+
+#[tauri::command]
+async fn reset_pill(shared: State<'_, Arc<Shared>>) -> Result<(), String> {
+    save(&shared, |s| {
+        s.pill_x = None;
+        s.pill_y = None;
+    });
+    pill::reset_position();
+    Ok(())
+}
+
+#[tauri::command]
+async fn mic_test(shared: State<'_, Arc<Shared>>, on: bool) -> Result<(), String> {
+    audio::UI_LEVEL.store(0, Ordering::Relaxed);
+    shared.tx.send(Msg::MicTest(on)).map_err(|e| e.to_string())
+}
+
+/// Loudest level since the last call, 0..1 on a dB scale.
+#[tauri::command]
+async fn mic_level() -> Result<f32, String> {
+    let peak = f32::from_bits(audio::UI_LEVEL.swap(0, Ordering::Relaxed));
+    let db = 20.0 * peak.max(1e-5).log10();
+    Ok(((db + 50.0) / 42.0).clamp(0.0, 1.0))
 }
 
 #[tauri::command]
@@ -189,12 +292,22 @@ fn main() {
     log::info!("Sotto {} starting", env!("CARGO_PKG_VERSION"));
 
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| open_settings(app)))
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|a| a == "--pill-demo") {
+                pill::demo();
+            } else {
+                open_app(app, None);
+            }
+        }))
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .invoke_handler(tauri::generate_handler![
             get_state,
             list_mics,
             save_settings,
+            save_dictionary,
+            reset_pill,
+            mic_test,
+            mic_level,
             download_model,
             clear_transcripts,
             show_transcripts,
@@ -212,7 +325,7 @@ fn main() {
             }
 
             let (tx, rx) = mpsc::channel();
-            let shared = Arc::new(Shared::new(s.clone(), tx.clone()));
+            let shared = Arc::new(Shared::new(s.clone(), dictionary::load(), tx.clone()));
             app.manage(shared.clone());
             tray::build(&handle, &s)?;
             hotkey::start(tx, &s.hotkey);
@@ -222,9 +335,14 @@ fn main() {
                     .name("engine".into())
                     .spawn(move || engine::run(handle, shared, rx))?;
             }
+            {
+                let events = handle.clone();
+                let pos = s.pill_x.zip(s.pill_y);
+                pill::start(&s.pill_mode, hotkey::label_for(&s.hotkey), pos, Box::new(move |ev| on_pill_event(&events, ev)));
+            }
             if !model::is_installed() {
                 start_download(&handle, &shared);
-                open_settings(&handle);
+                open_app(&handle, None);
             }
             Ok(())
         })
@@ -232,7 +350,7 @@ fn main() {
         .expect("failed to build app");
 
     app.run(|_app, event| {
-        // Closing the settings window must not quit the tray app.
+        // Closing the app window must not quit the tray app.
         if let RunEvent::ExitRequested { code: None, api, .. } = event {
             api.prevent_exit();
         }

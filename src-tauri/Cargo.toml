@@ -1,6 +1,6 @@
 [package]
 name = "sotto"
-version = "0.1.0"
+version = "0.2.0"
 description = "Push-to-talk dictation for Windows that runs fully on your machine"
 edition = "2021"
 publish = false
@@ -10,6 +10,7 @@ cpal = "0.18.2"
 log = "0.4.34"
 # transcribe-rs 0.3.12 accepts ^2.0.0-rc.12 but fails to build against rc.14+.
 ort = "=2.0.0-rc.13"
+regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
@@ -18,7 +19,8 @@ tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 transcribe-rs = { version = "0.3.12", features = ["onnx"] }
 ureq = "3.5.0"
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_Com", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_Media_Multimedia", "Win32_System_LibraryLoader", "Win32_Security", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Registry"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_Com", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_Media_Multimedia", "Win32_System_LibraryLoader", "Win32_Security", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Registry", "Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_DirectWrite", "Win32_Graphics_Gdi", "Win32_Graphics_Dxgi_Common", "Win32_UI_HiDpi", "Win32_UI_Accessibility", "Win32_System_SystemInformation", "Win32_System_Time"] }
+windows-numerics = "0.3.1"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

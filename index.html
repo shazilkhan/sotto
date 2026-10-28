@@ -4,96 +4,232 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Sotto</title>
-    <link rel="stylesheet" href="/src/style.css" />
     <script type="module" src="/src/main.ts"></script>
   </head>
   <body>
-    <header>
-      <div class="brand">
-        <img src="/icon.png" alt="" width="28" height="28" />
-        <h1>Sotto</h1>
+    <div class="app">
+      <header class="titlebar" data-tauri-drag-region>
+        <span class="lockup" data-tauri-drag-region aria-label="Sotto">
+          <span class="word" data-tauri-drag-region>sotto</span>
+          <span class="bar" data-tauri-drag-region></span>
+        </span>
+        <div class="controls">
+          <button type="button" class="wc" id="win-min" aria-label="Minimize">
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" stroke="currentColor" /></svg>
+          </button>
+          <button type="button" class="wc" id="win-max" aria-label="Maximize">
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><rect x=".5" y=".5" width="9" height="9" fill="none" stroke="currentColor" /></svg>
+          </button>
+          <button type="button" class="wc close" id="win-close" aria-label="Close to tray">
+            <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0 0 10" stroke="currentColor" /></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="body">
+        <nav aria-label="Main">
+          <div class="links">
+            <a class="nav" href="#home" data-view="home">Home</a>
+            <a class="nav" href="#dictionary" data-view="dictionary">Dictionary</a>
+            <a class="nav" href="#settings" data-view="settings">Settings</a>
+          </div>
+          <div class="status">
+            <span class="label">Status</span>
+            <span class="status-line"><span class="status-bar" id="status-bar"></span><span id="status-text">Ready</span></span>
+            <span class="muted" id="status-mic"></span>
+            <span class="muted" id="status-model"></span>
+          </div>
+        </nav>
+
+        <main class="sheet">
+          <!-- Home -->
+          <section class="view" id="view-home" aria-labelledby="home-h">
+            <div class="setup" id="setup" hidden>
+              <span class="label">Setting up</span>
+              <p id="setup-text"></p>
+              <div class="track"><div id="setup-bar"></div></div>
+              <button type="button" class="btn" id="setup-retry" hidden>Try again</button>
+            </div>
+            <header class="page-head">
+              <h1 id="home-h">Hold <span class="kbd" id="home-key">Right Ctrl</span> and talk.</h1>
+              <p>Let go and your words appear wherever the cursor is. Other apps go quiet while you talk. <a href="#settings" data-view="settings">Change shortcut</a></p>
+            </header>
+            <section class="stats" aria-label="This week">
+              <div><span class="num" id="stat-words">0</span><span class="label">Words this week</span></div>
+              <div><span class="num" id="stat-wpm">0</span><span class="label">Words per minute</span></div>
+              <div><span class="num"><span id="stat-saved">0</span><span class="unit"> min</span></span><span class="label">Saved vs typing</span></div>
+            </section>
+            <section aria-labelledby="recent-h">
+              <div class="list-head">
+                <h2 id="recent-h">Recent</h2>
+                <label class="search">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                  <span class="sr">Search dictations</span>
+                  <input type="search" id="search" placeholder="Search" />
+                </label>
+              </div>
+              <ul class="rows" id="history"></ul>
+              <p class="muted small" id="history-empty">Nothing yet. Hold your shortcut and talk; your last 20 dictations show up here.</p>
+              <p class="muted small foot">Kept until Sotto quits. Turn on "Keep transcripts on this PC" in Settings to keep them longer.</p>
+            </section>
+          </section>
+
+          <!-- Dictionary -->
+          <section class="view" id="view-dictionary" aria-labelledby="dict-h" hidden>
+            <header class="page-head">
+              <h1 id="dict-h">Dictionary</h1>
+              <p>Names and terms Sotto should always spell your way. If it mishears one, add what it writes instead, and Sotto will swap it every time.</p>
+            </header>
+            <form class="add" id="dict-form" aria-label="Add a word">
+              <label class="field grow1"><span class="label">Word</span><input type="text" id="dict-word" placeholder="Supabase" autocomplete="off" /></label>
+              <label class="field grow2"><span class="label">Sometimes heard as</span><input type="text" id="dict-alias" placeholder="supa base, super base" autocomplete="off" /></label>
+              <button type="submit" class="btn">Add</button>
+            </form>
+            <section aria-labelledby="words-h">
+              <div class="list-head tight">
+                <h2 id="words-h">No words yet</h2>
+                <span class="label">Heard as</span>
+              </div>
+              <ul class="rows" id="words"></ul>
+              <p class="muted small foot" id="dict-note"></p>
+            </section>
+          </section>
+
+          <!-- Settings -->
+          <section class="view" id="view-settings" aria-labelledby="set-h" hidden>
+            <header class="page-head">
+              <h1 id="set-h">Settings</h1>
+              <p>Changes save as you make them.</p>
+            </header>
+
+            <section class="sec" aria-labelledby="s-key">
+              <div class="sec-h"><h2 id="s-key">Shortcut</h2><p>Hold it to talk, let go to paste.</p></div>
+              <div class="sec-b">
+                <div class="row">
+                  <span class="name">Push to talk</span>
+                  <span class="inline">
+                    <span class="kbd small-kbd" id="key-label">Right Ctrl</span>
+                    <button type="button" class="ghost" id="key-change">Change</button>
+                  </span>
+                </div>
+                <div class="row" id="key-pick" hidden>
+                  <span class="name">Pick a shortcut<small>Any other key pressed while you hold it cancels, so normal shortcuts still work</small></span>
+                  <span class="seg" role="group" aria-label="Shortcut" id="key-seg"></span>
+                </div>
+              </div>
+            </section>
+
+            <section class="sec" aria-labelledby="s-pill">
+              <div class="sec-h"><h2 id="s-pill">Floating pill</h2><p>Sits on top of every app. Drag it anywhere and it stays there.</p></div>
+              <div class="sec-b">
+                <div class="row wrap">
+                  <span class="name">Show the pill</span>
+                  <span class="seg" role="group" aria-label="Show the pill">
+                    <button type="button" data-pill="always">Always</button>
+                    <button type="button" data-pill="talking">While talking</button>
+                    <button type="button" data-pill="never">Never</button>
+                  </span>
+                </div>
+                <div class="row">
+                  <span class="name">Position<small id="pill-pos">Bottom centre</small></span>
+                  <button type="button" class="tbtn" id="pill-reset">Reset</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="sec" aria-labelledby="s-mic">
+              <div class="sec-h"><h2 id="s-mic">Microphone</h2><p>Opens only while you hold the shortcut, so it's never on in the background.</p></div>
+              <div class="sec-b">
+                <div class="row">
+                  <label class="name" for="mic">Input</label>
+                  <select id="mic" class="sel"><option value="">Windows default</option></select>
+                </div>
+                <div class="row">
+                  <span class="name">Level<small id="level-note">Test it to see the mic hearing you</small></span>
+                  <span class="inline">
+                    <span class="meter" id="meter" aria-hidden="true"></span>
+                    <button type="button" class="ghost" id="mic-test">Test</button>
+                  </span>
+                </div>
+                <label class="row">
+                  <span class="name">Mute other apps while I talk<small>Stops YouTube or music from leaking into the mic</small></span>
+                  <input type="checkbox" class="sw" data-toggle="muteWhileDictating" />
+                </label>
+              </div>
+            </section>
+
+            <section class="sec" aria-labelledby="s-gen">
+              <div class="sec-h"><h2 id="s-gen">Sound and startup</h2><p>Small things that make it feel right.</p></div>
+              <div class="sec-b">
+                <label class="row"><span class="name">Start and stop sounds</span><input type="checkbox" class="sw" data-toggle="sounds" /></label>
+                <label class="row"><span class="name">Start with Windows<small>Waits quietly in the tray</small></span><input type="checkbox" class="sw" data-toggle="startWithWindows" /></label>
+                <label class="row"><span class="name">Add a space after each dictation<small>So back-to-back dictations don't run together</small></span><input type="checkbox" class="sw" data-toggle="trailingSpace" /></label>
+              </div>
+            </section>
+
+            <section class="sec" aria-labelledby="s-model">
+              <div class="sec-h"><h2 id="s-model">Speech model</h2><p>Runs on this PC. Nothing you say is uploaded.</p></div>
+              <div class="sec-b">
+                <div class="row">
+                  <span class="name">NVIDIA Parakeet TDT 0.6B v3<small class="mono" id="model-meta">670 MB · English + 24 European languages · CPU</small></span>
+                  <span class="label" id="model-state">Installed</span>
+                </div>
+                <div class="row">
+                  <label class="name" for="keep">Keep it in memory<small>It reloads while you speak, so you never wait</small></label>
+                  <select id="keep" class="sel narrow">
+                    <option value="0">Unload right away</option>
+                    <option value="5">5 minutes</option>
+                    <option value="15">15 minutes</option>
+                    <option value="60">1 hour</option>
+                    <option value="-1">Always</option>
+                  </select>
+                </div>
+              </div>
+            </section>
+
+            <section class="sec" aria-labelledby="s-clean">
+              <div class="sec-h"><h2 id="s-clean">Text cleanup</h2><p>Tidies what you said before it's pasted.</p></div>
+              <div class="sec-b">
+                <div class="row wrap">
+                  <span class="seg" role="group" aria-label="Cleanup mode">
+                    <button type="button" data-clean="off">Off</button>
+                    <button type="button" data-clean="light">Light</button>
+                    <button type="button" disabled>Smart <span class="mono soon">soon</span></button>
+                  </span>
+                </div>
+                <p class="muted note" id="clean-note"></p>
+              </div>
+            </section>
+
+            <section class="sec" aria-labelledby="s-priv">
+              <div class="sec-h"><h2 id="s-priv">Privacy</h2><p>Audio never leaves this PC.</p></div>
+              <div class="sec-b">
+                <label class="row">
+                  <span class="name">Keep transcripts on this PC<small>For tuning cleanup. Saved in your AppData, never uploaded</small></span>
+                  <input type="checkbox" class="sw" data-toggle="keepTranscripts" />
+                </label>
+                <div class="row" id="tx-row">
+                  <span class="mono muted small" id="tx-count">0 dictations saved</span>
+                  <span class="inline gap20">
+                    <button type="button" class="tbtn" id="tx-show">Show file</button>
+                    <button type="button" class="tbtn" id="tx-clear">Delete all</button>
+                  </span>
+                </div>
+              </div>
+            </section>
+
+            <section class="sec" aria-labelledby="s-about">
+              <div class="sec-h"><h2 id="s-about">About</h2></div>
+              <div class="sec-b">
+                <div class="row">
+                  <span class="name"><span id="version">Sotto</span><small>Speech model: NVIDIA Parakeet TDT 0.6B v3, CC BY 4.0 · <span class="mono">github.com/shazilkhan/sotto</span></small></span>
+                  <span class="lockup big" aria-hidden="true"><span class="word">sotto</span><span class="bar"></span></span>
+                </div>
+              </div>
+            </section>
+          </section>
+        </main>
       </div>
-      <span id="status" class="pill">…</span>
-    </header>
-
-    <section id="download" class="card" hidden>
-      <h2>Speech model</h2>
-      <p id="download-text" class="muted"></p>
-      <div class="bar"><div id="download-bar"></div></div>
-      <button id="download-retry" hidden>Try again</button>
-    </section>
-
-    <p class="howto">Hold <kbd id="howto-key">Ctrl + Win</kbd>, speak, then let go. The text goes wherever your cursor is.</p>
-
-    <section class="card rows">
-      <label class="row">
-        <span>Shortcut</span>
-        <select id="hotkey"></select>
-      </label>
-      <label class="row">
-        <span>Microphone</span>
-        <select id="mic"><option value="">Windows default</option></select>
-      </label>
-      <label class="row">
-        <span>
-          Mute other apps while dictating
-          <small>Stops YouTube or music from leaking into the mic</small>
-        </span>
-        <input type="checkbox" id="muteWhileDictating" class="switch" />
-      </label>
-      <label class="row">
-        <span>Start and stop sounds</span>
-        <input type="checkbox" id="sounds" class="switch" />
-      </label>
-      <label class="row">
-        <span>
-          Add a space after each dictation
-          <small>So back-to-back dictations don't run together</small>
-        </span>
-        <input type="checkbox" id="trailingSpace" class="switch" />
-      </label>
-      <label class="row">
-        <span>
-          Keep model in memory
-          <small id="model-note">Reloads while you speak, so the first word isn't lost</small>
-        </span>
-        <select id="keepModelMins">
-          <option value="0">Unload right away</option>
-          <option value="5">5 minutes</option>
-          <option value="15">15 minutes</option>
-          <option value="60">1 hour</option>
-          <option value="-1">Always</option>
-        </select>
-      </label>
-      <label class="row">
-        <span>Start with Windows</span>
-        <input type="checkbox" id="startWithWindows" class="switch" />
-      </label>
-      <label class="row">
-        <span>
-          Keep transcripts on this PC
-          <small>For tuning text cleanup. Saved in your AppData, never uploaded</small>
-        </span>
-        <input type="checkbox" id="keepTranscripts" class="switch" />
-      </label>
-      <div class="row sub" id="transcripts-actions" hidden>
-        <small id="transcript-count"></small>
-        <span>
-          <button type="button" class="link" id="transcripts-show">Show file</button>
-          <button type="button" class="link" id="transcripts-clear">Delete all</button>
-        </span>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2>Recent</h2>
-      <p id="history-empty" class="muted">Nothing yet. Your last 20 dictations show here until Sotto quits. Click one to copy it.</p>
-      <ul id="history"></ul>
-    </section>
-
-    <footer class="muted">
-      <span id="version"></span> · Runs fully on this PC, no audio leaves it.<br />
-      Speech model: NVIDIA Parakeet TDT 0.6B v3 (CC BY 4.0).
-    </footer>
+    </div>
   </body>
 </html>

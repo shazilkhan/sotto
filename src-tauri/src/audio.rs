@@ -4,9 +4,16 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub const TARGET_RATE: u32 = 16_000;
+
+/// Loudest sample since the last read, as f32 bits (non-negative floats
+/// order the same as their bits, so `fetch_max` works). The pill and the
+/// Settings level meter each swap their own copy back to zero.
+pub static PILL_LEVEL: AtomicU32 = AtomicU32::new(0);
+pub static UI_LEVEL: AtomicU32 = AtomicU32::new(0);
 
 pub struct Recorder {
     stream: cpal::Stream,
@@ -89,10 +96,15 @@ where
             config,
             move |data: &[T], _| {
                 let mut b = buf.lock().unwrap();
+                let mut peak = 0f32;
                 for frame in data.chunks_exact(channels) {
                     let sum: f32 = frame.iter().map(|&s| s.to_sample::<f32>()).sum();
-                    b.push(sum / channels as f32);
+                    let s = sum / channels as f32;
+                    peak = peak.max(s.abs());
+                    b.push(s);
                 }
+                PILL_LEVEL.fetch_max(peak.to_bits(), Ordering::Relaxed);
+                UI_LEVEL.fetch_max(peak.to_bits(), Ordering::Relaxed);
             },
             |e| log::warn!("mic stream error: {e}"),
             None,

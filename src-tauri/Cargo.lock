@@ -3900,11 +3900,12 @@ dependencies = [
 
 [[package]]
 name = "sotto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cpal",
  "log",
  "ort",
+ "regex",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -3915,6 +3916,7 @@ dependencies = [
  "transcribe-rs",
  "ureq",
  "windows",
+ "windows-numerics",
 ]
 
 [[package]]

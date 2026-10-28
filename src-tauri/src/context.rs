@@ -9,6 +9,31 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
+/// A readable app name for the history list: "slack.exe" -> "Slack".
+pub fn display_name(exe: Option<&str>) -> String {
+    let Some(exe) = exe else { return String::new() };
+    let stem = exe.strip_suffix(".exe").unwrap_or(exe);
+    let known = match stem {
+        "chrome" => "Chrome",
+        "msedge" => "Edge",
+        "firefox" => "Firefox",
+        "code" => "VS Code",
+        "cursor" => "Cursor",
+        "windowsterminal" | "cmd" | "powershell" | "pwsh" => "Terminal",
+        "ms-teams" | "teams" => "Teams",
+        "winword" => "Word",
+        "outlook" | "olk" => "Outlook",
+        "whatsapp" => "WhatsApp",
+        "explorer" => "Explorer",
+        _ => "",
+    };
+    if !known.is_empty() {
+        return known.to_string();
+    }
+    let mut chars = stem.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
 /// Lowercased exe name of the foreground window's process, e.g. "slack.exe".
 pub fn foreground_exe() -> Option<String> {
     unsafe {

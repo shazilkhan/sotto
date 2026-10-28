@@ -84,6 +84,10 @@ pub fn mute_others() -> Muted {
 }
 
 impl Muted {
+    pub fn count(&self) -> usize {
+        self.0.len()
+    }
+
     pub fn restore(self) {
         for volume in &self.0 {
             let _ = unsafe { volume.SetMute(false, std::ptr::null()) };
