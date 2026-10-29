@@ -143,6 +143,14 @@ Data lives in two places:
 
 The log records timings and lengths, never transcript text.
 
+Windows quietly redirects AppData for anything started by a packaged app (one
+from the Microsoft Store or an MSIX installer, such as the Claude desktop
+app) into that app's private folder. Data saved that way disappears as soon
+as Sotto is started normally. Sotto checks for this at startup by writing a
+probe file. If its files are being redirected, it restarts itself through
+Explorer, outside the package. It also moves back, and merges, anything an
+earlier run left in a package's private folder (`src-tauri/src/storage.rs`).
+
 ## Known limits
 
 - **Admin windows:** the hotkey doesn't fire while an elevated (admin) window

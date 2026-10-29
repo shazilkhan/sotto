@@ -44,12 +44,21 @@ pub fn total_bytes() -> u64 {
 }
 
 pub fn dir() -> PathBuf {
-    crate::settings::data_dir().join("models").join("parakeet-tdt-0.6b-v3-int8")
+    dir_in(&crate::settings::data_dir())
+}
+
+fn dir_in(data: &std::path::Path) -> PathBuf {
+    data.join("models").join("parakeet-tdt-0.6b-v3-int8")
 }
 
 /// Cheap check (sizes only); hashes are verified once, at download time.
 pub fn is_installed() -> bool {
-    FILES.iter().all(|f| fs::metadata(dir().join(f.name)).map(|m| m.len() == f.size).unwrap_or(false))
+    is_complete(&crate::settings::data_dir())
+}
+
+/// Every model file is present at full size under this data folder.
+pub fn is_complete(data: &std::path::Path) -> bool {
+    FILES.iter().all(|f| fs::metadata(dir_in(data).join(f.name)).map(|m| m.len() == f.size).unwrap_or(false))
 }
 
 /// Downloads whatever is missing. `progress(done, total)` is called as bytes

@@ -66,6 +66,23 @@ pub fn record(words: u64, secs: f32) {
     }
 }
 
+/// Adds another stats file's days to this one (data moved back from elsewhere).
+pub fn merge_from(other: &std::path::Path) {
+    let Some(theirs) = std::fs::read_to_string(other).ok().and_then(|s| serde_json::from_str::<File>(&s).ok()) else {
+        return;
+    };
+    let mut f = load();
+    for (day, d) in theirs.days {
+        let e = f.days.entry(day).or_default();
+        e.words += d.words;
+        e.secs += d.secs;
+        e.count += d.count;
+    }
+    if let Ok(json) = serde_json::to_string(&f) {
+        let _ = std::fs::write(path(), json);
+    }
+}
+
 pub fn week() -> Week {
     summarize(&load(), today())
 }

@@ -20,7 +20,11 @@ fn path() -> PathBuf {
 }
 
 pub fn load() -> Vec<Entry> {
-    std::fs::read_to_string(path())
+    load_from(&path())
+}
+
+pub fn load_from(path: &std::path::Path) -> Vec<Entry> {
+    std::fs::read_to_string(path)
         .ok()
         // Editors like Notepad and PowerShell 5 may add a byte-order mark.
         .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
@@ -72,6 +76,22 @@ pub fn learn(entries: &mut Vec<Entry>, heard: &str, word: &str) -> bool {
     }
     entries.insert(0, Entry { word: word.to_string(), aliases: vec![heard.to_string()], learned: true });
     true
+}
+
+/// Adds another dictionary's words and spellings to this one.
+pub fn merge(entries: &mut Vec<Entry>, other: Vec<Entry>) {
+    for o in other {
+        match entries.iter_mut().find(|e| e.word.eq_ignore_ascii_case(&o.word)) {
+            Some(e) => {
+                for a in o.aliases {
+                    if !e.aliases.iter().any(|x| x.eq_ignore_ascii_case(&a)) {
+                        e.aliases.push(a);
+                    }
+                }
+            }
+            None => entries.push(o),
+        }
+    }
 }
 
 pub fn save(entries: &[Entry]) -> std::io::Result<()> {

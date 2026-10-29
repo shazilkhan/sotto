@@ -77,7 +77,7 @@ pub fn data_dir() -> PathBuf {
     env_dir("LOCALAPPDATA")
 }
 
-fn settings_path() -> PathBuf {
+pub fn settings_path() -> PathBuf {
     config_dir().join("settings.json")
 }
 
@@ -86,11 +86,14 @@ pub fn is_first_run() -> bool {
 }
 
 pub fn load() -> Settings {
-    std::fs::read_to_string(settings_path())
+    load_from(&settings_path()).unwrap_or_default()
+}
+
+pub fn load_from(path: &std::path::Path) -> Option<Settings> {
+    std::fs::read_to_string(path)
         .ok()
         // Editors like Notepad and PowerShell 5 may add a byte-order mark.
         .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
-        .unwrap_or_default()
 }
 
 pub fn save(settings: &Settings) -> std::io::Result<()> {

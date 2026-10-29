@@ -17,6 +17,8 @@ mod secret;
 mod settings;
 mod smart;
 mod sounds;
+mod spell;
+mod storage;
 mod stats;
 mod transcripts;
 mod tray;
@@ -426,6 +428,11 @@ fn main() {
         [_, flag, file, opt] if flag == "--bench-cleanup" && opt == "--smart" => return cleanup::bench(file, true),
         _ => {}
     }
+    // Started from inside another app's package (the Claude desktop app, say),
+    // everything would be saved in that app's private folder. Restart outside.
+    if args.len() == 1 && storage::relaunch_if_packaged() {
+        return;
+    }
     logger::init();
     log::info!("Sotto {} starting", env!("CARGO_PKG_VERSION"));
 
@@ -458,6 +465,7 @@ fn main() {
             open_key_page
         ])
         .setup(|app| {
+            storage::rescue();
             let handle = app.handle().clone();
             let first_run = settings::is_first_run();
             let s = settings::load();

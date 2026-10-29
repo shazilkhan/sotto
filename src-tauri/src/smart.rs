@@ -33,7 +33,7 @@ Make only these changes:
 
 4. Computer terms. Write them the way they're typed: email addresses ("sam at example dot com" is sam@example.com), web addresses, file names ("package dot json" is package.json), paths, and the usual spelling of commands and tools (npm, git, VS Code, GitHub, JavaScript).
 
-5. Spellings. Spell every term in the speaker's dictionary exactly as listed.
+5. Spellings. Spell every term in the speaker's dictionary exactly as listed. Speech recognition often mishears those terms as similar-sounding words ("super base" or "Superbass" for Supabase); use the term when the sentence is about it, and leave ordinary uses of similar words alone ("the army's super base").
 
 Leave everything else exactly as it is: the wording, word order, tone, grammar, punctuation, line breaks, "- " bullets, and anything already written as digits or symbols. Don't rephrase, and don't add or remove anything else. If nothing needs changing, return the text unchanged.
 
@@ -80,9 +80,13 @@ const PHRASES: &[&str] = &[
 ];
 
 /// Whether the text has anything Smart would change. Without a spoken
-/// number, a correction cue, a counted list or a spoken symbol there's
-/// nothing to ask about, and the Light text is pasted at once.
-pub fn needs(text: &str) -> bool {
+/// number, a correction cue, a counted list, a spoken symbol or real words
+/// close to a Dictionary word, there's nothing to ask about, and the Light
+/// text is pasted at once.
+pub fn needs(text: &str, dictionary: &[Entry]) -> bool {
+    if crate::cleanup::has_near_miss(text, dictionary) {
+        return true;
+    }
     let lower = text.to_lowercase();
     let words: Vec<&str> = lower
         .split(|c: char| !(c.is_alphanumeric() || c == '\''))
@@ -139,7 +143,14 @@ fn prompt(text: &str, app: Option<&str>, dictionary: &[Entry]) -> String {
         out.push_str(&format!("App: {}\n", describe_app(app)));
     }
     if !dictionary.is_empty() {
-        let terms: Vec<&str> = dictionary.iter().take(MAX_TERMS).map(|e| e.word.as_str()).collect();
+        let terms: Vec<String> = dictionary
+            .iter()
+            .take(MAX_TERMS)
+            .map(|e| match e.aliases.is_empty() {
+                true => e.word.clone(),
+                false => format!("{} (heard as {})", e.word, e.aliases.iter().take(3).cloned().collect::<Vec<_>>().join(", ")),
+            })
+            .collect();
         out.push_str(&format!("Dictionary: {}\n", terms.join(", ")));
     }
     out.push_str(&format!("\n<text>{text}</text>"));
@@ -229,15 +240,15 @@ mod tests {
 
     #[test]
     fn needs_only_fires_on_cues() {
-        assert!(needs("We have fifty signups."));
-        assert!(needs("Meet on Tuesday, no wait, Wednesday."));
-        assert!(needs("First, the logo. Second, the copy."));
-        assert!(needs("Email sam at example dot com."));
-        assert!(needs("It's twenty-one days."));
-        assert!(!needs("Sounds good, see you then."));
-        assert!(!needs("One of them is from Lisbon."));
-        assert!(!needs("The meeting is at 4 PM in the main office."));
-        assert!(!needs("I'm sorrowful."));
+        assert!(needs("We have fifty signups.", &[]));
+        assert!(needs("Meet on Tuesday, no wait, Wednesday.", &[]));
+        assert!(needs("First, the logo. Second, the copy.", &[]));
+        assert!(needs("Email sam at example dot com.", &[]));
+        assert!(needs("It's twenty-one days.", &[]));
+        assert!(!needs("Sounds good, see you then.", &[]));
+        assert!(!needs("One of them is from Lisbon.", &[]));
+        assert!(!needs("The meeting is at 4 PM in the main office.", &[]));
+        assert!(!needs("I'm sorrowful.", &[]));
     }
 
     #[test]

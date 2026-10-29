@@ -109,6 +109,28 @@ pub fn clear() -> std::io::Result<()> {
     }
 }
 
+/// Adds the entries from another history file (data moved back from
+/// elsewhere), skipping ids already here, and keeps the file in time order.
+pub fn merge_from(other: &std::path::Path) -> std::io::Result<usize> {
+    let _guard = LOCK.lock().unwrap();
+    let text = std::fs::read_to_string(other)?;
+    let mut all = read_all();
+    let ids: std::collections::HashSet<u64> = all.iter().map(|e| e.id).collect();
+    let extra: Vec<Entry> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Entry>(l).ok())
+        .filter(|e| e.id == 0 || !ids.contains(&e.id))
+        .collect();
+    let n = extra.len();
+    if n > 0 {
+        all.extend(extra);
+        all.sort_by_key(|e| (e.at, e.id));
+        std::fs::create_dir_all(crate::settings::data_dir())?;
+        write_all(&all)?;
+    }
+    Ok(n)
+}
+
 /// Drops entries older than `days` (negative keeps everything) and gives
 /// older entries written before ids existed a stable id.
 pub fn maintain(days: i32, now_secs: u64) {

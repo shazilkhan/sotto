@@ -5,6 +5,7 @@
 //! lists depend on meaning, so they're left for Smart (smart.rs).
 
 use crate::dictionary::Entry;
+use crate::learn::{letters, levenshtein};
 use regex::{Captures, Regex, RegexBuilder};
 use serde::Deserialize;
 use std::sync::OnceLock;
@@ -15,7 +16,12 @@ pub struct Context {
     pub app: Option<String>,
     pub light: bool,
     pub dictionary: Vec<Entry>,
+    /// Tells real English words from mishearings (`spell::known`). Without
+    /// it, only near-misses with exactly the same letters are swapped.
+    pub known: Option<KnownWords>,
 }
+
+pub type KnownWords = fn(&[&str]) -> Option<Vec<bool>>;
 
 /// Hesitation sounds, including stretched spellings ("uhhh", "ummm", "aah",
 /// "ooh"). Plain "oh" and "mhm" carry meaning and are kept.
@@ -60,7 +66,8 @@ pub fn light(raw: &str, ctx: &Context) -> String {
         .join("\n");
     let text = spoken_quotes(&text);
     let text = key_combos(&text);
-    apply_dictionary(&text, &ctx.dictionary)
+    let text = apply_dictionary(&text, &ctx.dictionary);
+    text.lines().map(|l| fix_near_misses(l, ctx)).collect::<Vec<_>>().join("\n")
 }
 
 /// The last step for both tiers: dictionary spellings (again, in case Smart
@@ -357,6 +364,112 @@ fn apply_dictionary(text: &str, dictionary: &[Entry]) -> String {
     out
 }
 
+/// A run of one to three words that reads like a Dictionary word without
+/// being spelled like it.
+struct NearMiss {
+    start: usize,
+    end: usize,
+    word: String,
+    same_letters: bool,
+}
+
+/// Spans whose letters are within a third of a Dictionary word or one of
+/// its "heard as" spellings, starting with the same letter ("Superbass" or
+/// "super base" for Supabase). Words under five letters are skipped: too
+/// many real words sit that close to them.
+fn near_misses(tokens: &[&str], dictionary: &[Entry]) -> Vec<NearMiss> {
+    let targets: Vec<(String, &str)> = dictionary
+        .iter()
+        .flat_map(|e| std::iter::once(&e.word).chain(&e.aliases).map(move |t| (letters(t), e.word.as_str())))
+        .filter(|(l, _)| l.chars().count() >= 5)
+        .collect();
+    if targets.is_empty() {
+        return vec![];
+    }
+    let mut found: Vec<(usize, NearMiss)> = Vec::new();
+    for i in 0..tokens.len() {
+        for end in i + 1..=(i + 3).min(tokens.len()) {
+            // A span never runs across punctuation between its words.
+            if tokens[i..end - 1].iter().any(|t| t.ends_with(|c: char| ",.;:!?".contains(c))) {
+                break;
+            }
+            let span = letters(&tokens[i..end].concat());
+            let sl = span.chars().count();
+            if sl < 4 {
+                continue;
+            }
+            let as_typed = tokens[i..end].iter().map(|t| core(t)).collect::<Vec<_>>().join(" ");
+            for (tl, word) in &targets {
+                let n = tl.chars().count();
+                if span.chars().next() != tl.chars().next() || sl * 3 < n * 2 || sl * 2 > n * 3 {
+                    continue;
+                }
+                // Already right, or the word with an ending ("Supabase's").
+                if as_typed.eq_ignore_ascii_case(word) || (sl > n && sl <= n + 2 && span.starts_with(tl.as_str())) {
+                    continue;
+                }
+                let d = levenshtein(&span, tl);
+                let longest = sl.max(n);
+                if d * 3 > longest {
+                    continue;
+                }
+                found.push((d * 1000 / longest, NearMiss { start: i, end, word: word.to_string(), same_letters: d == 0 }));
+            }
+        }
+    }
+    // Closest first, longer spans breaking ties; overlaps lose.
+    found.sort_by_key(|(score, m)| (*score, std::cmp::Reverse(m.end - m.start)));
+    let mut taken = vec![false; tokens.len()];
+    let mut out = Vec::new();
+    for (_, m) in found {
+        if taken[m.start..m.end].iter().any(|t| *t) {
+            continue;
+        }
+        taken[m.start..m.end].iter_mut().for_each(|t| *t = true);
+        out.push(m);
+    }
+    out.sort_by_key(|m| m.start);
+    out
+}
+
+/// Text that still has a near-miss after Light: real words close to a
+/// Dictionary word, which only the sentence can settle. Smart takes those.
+pub fn has_near_miss(text: &str, dictionary: &[Entry]) -> bool {
+    text.lines().any(|l| !near_misses(&l.split_whitespace().collect::<Vec<_>>(), dictionary).is_empty())
+}
+
+/// Swaps a near-miss for the Dictionary word when it can't be ordinary
+/// words: the letters match exactly ("Supa base" for Supabase), or a word
+/// in it isn't English ("Super Biss"). "super base" is two real words, so
+/// it's left alone here.
+fn fix_near_misses(line: &str, ctx: &Context) -> String {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let misses = near_misses(&tokens, &ctx.dictionary);
+    if misses.is_empty() {
+        return line.to_string();
+    }
+    let to_check: Vec<&str> =
+        misses.iter().filter(|m| !m.same_letters).flat_map(|m| tokens[m.start..m.end].iter().map(|t| core(t))).collect();
+    let known = if to_check.is_empty() { None } else { ctx.known.and_then(|f| f(&to_check)) };
+    // Without a spell checker, every word counts as real.
+    let is_known = |w: &str| known.as_ref().and_then(|k| to_check.iter().position(|c| *c == w).map(|i| k[i])).unwrap_or(true);
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    for m in &misses {
+        let sure = m.same_letters || tokens[m.start..m.end].iter().any(|t| !is_known(core(t)));
+        if !sure {
+            continue;
+        }
+        out.extend(tokens[i..m.start].iter().map(|t| t.to_string()));
+        let (first, last) = (tokens[m.start], tokens[m.end - 1]);
+        let lead = &first[..first.len() - first.trim_start_matches(|c: char| !c.is_alphanumeric()).len()];
+        out.push(format!("{lead}{}{}", m.word, trailing_punct(last)));
+        i = m.end;
+    }
+    out.extend(tokens[i..].iter().map(|t| t.to_string()));
+    out.join(" ")
+}
+
 /// Terminals get bare commands; chat apps drop the full stop on one-liners.
 fn fit_app(text: &str, app: Option<&str>) -> String {
     let Some(app) = app else { return text.to_string() };
@@ -436,13 +549,13 @@ pub fn bench(path: &str, smart: bool) {
         total += 1;
         let mut dictionary = saved.clone();
         dictionary.extend(case.dictionary.iter().map(|(w, a)| Entry { word: w.clone(), aliases: a.clone(), learned: false }));
-        let ctx = Context { app: case.app.clone(), light: true, dictionary };
+        let ctx = Context { app: case.app.clone(), light: true, dictionary, known: Some(crate::spell::known) };
         let t = Instant::now();
         let mut out = clean(&case.raw, &ctx);
         times.push(t.elapsed().as_micros());
         if smart {
             let light_text = light(&case.raw, &ctx);
-            if crate::smart::needs(&light_text) {
+            if crate::smart::needs(&light_text, &ctx.dictionary) {
                 calls += 1;
                 let t = Instant::now();
                 match crate::smart::fix(&light_text, ctx.app.as_deref(), &ctx.dictionary) {
@@ -510,12 +623,12 @@ mod tests {
     use super::*;
 
     fn light(raw: &str) -> String {
-        clean(raw, &Context { app: None, light: true, dictionary: vec![] })
+        clean(raw, &Context { app: None, light: true, dictionary: vec![], known: None })
     }
 
     #[test]
     fn off_is_pass_through() {
-        let ctx = Context { app: None, light: false, dictionary: vec![] };
+        let ctx = Context { app: None, light: false, dictionary: vec![], known: None };
         assert_eq!(clean("  Um, hello.  ", &ctx), "Um, hello.");
     }
 
@@ -570,16 +683,43 @@ mod tests {
             app: None,
             light: true,
             dictionary: vec![Entry { word: "Supabase".into(), aliases: vec!["supa base".into()], learned: false }],
+            known: None,
         };
         assert_eq!(clean("Pushed to supa base and supabase.", &ctx), "Pushed to Supabase and Supabase.");
         assert_eq!(clean("Supabases are nice.", &ctx), "Supabases are nice.");
     }
 
+    /// Stands in for the Windows spell checker.
+    fn fake_known(words: &[&str]) -> Option<Vec<bool>> {
+        const REAL: &[&str] = &["super", "base", "busy", "army", "built", "near", "coast"];
+        Some(words.iter().map(|w| REAL.contains(&w.to_lowercase().as_str())).collect())
+    }
+
+    #[test]
+    fn close_mishearings_of_dictionary_words() {
+        let ctx = Context {
+            app: None,
+            light: true,
+            dictionary: vec![Entry { word: "Supabase".into(), aliases: vec!["Super Biss".into()], learned: true }],
+            known: Some(fake_known),
+        };
+        // Not real words, so they can only be the Dictionary word.
+        assert_eq!(clean("I pushed it to superbass this morning.", &ctx), "I pushed it to Supabase this morning.");
+        assert_eq!(clean("Push it to super biz.", &ctx), "Push it to Supabase.");
+        assert_eq!(clean("Push it to Supa base.", &ctx), "Push it to Supabase.");
+        // Real words stay; Smart decides those from the sentence.
+        assert_eq!(clean("The army built a super base near the coast.", &ctx), "The army built a super base near the coast.");
+        assert!(has_near_miss("The army built a super base near the coast.", &ctx.dictionary));
+        assert_eq!(clean("I'm super busy today.", &ctx), "I'm super busy today.");
+        assert_eq!(clean("Supabase's docs are good.", &ctx), "Supabase's docs are good.");
+        assert!(!has_near_miss("Sounds good to me.", &ctx.dictionary));
+    }
+
     #[test]
     fn app_context() {
-        let term = Context { app: Some("windowsterminal.exe".into()), light: true, dictionary: vec![] };
+        let term = Context { app: Some("windowsterminal.exe".into()), light: true, dictionary: vec![], known: None };
         assert_eq!(clean("Git status.", &term), "git status");
-        let chat = Context { app: Some("slack.exe".into()), light: true, dictionary: vec![] };
+        let chat = Context { app: Some("slack.exe".into()), light: true, dictionary: vec![], known: None };
         assert_eq!(clean("Sounds good, see you then.", &chat), "Sounds good, see you then");
         assert_eq!(clean("Done. See you then.", &chat), "Done. See you then.");
         assert_eq!(clean("Really?", &chat), "Really?");

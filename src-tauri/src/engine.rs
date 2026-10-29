@@ -180,7 +180,7 @@ impl Shared {
 /// (no key, offline, slow, odd reply) pastes the Light text instead.
 fn smart_clean(raw: &str, ctx: &cleanup::Context) -> (String, Option<u64>) {
     let light = cleanup::light(raw, ctx);
-    if !smart::needs(&light) || !secret::is_set() {
+    if !smart::needs(&light, &ctx.dictionary) || !secret::is_set() {
         return (cleanup::finish(&light, ctx), None);
     }
     let t = Instant::now();
@@ -413,7 +413,7 @@ impl Engine {
             let raw = if audio::peak(&audio) < SILENCE_PEAK { Ok(String::new()) } else { shared.transcribe(&audio) };
             let took = t.elapsed();
             let result = raw.map(|raw| {
-                let ctx = cleanup::Context { app: app.clone(), light, dictionary };
+                let ctx = cleanup::Context { app: app.clone(), light, dictionary, known: Some(crate::spell::known) };
                 let (text, smart_ms) = if smart { smart_clean(&raw, &ctx) } else { (cleanup::clean(&raw, &ctx), None) };
                 Transcript { raw, text, app, audio_secs: secs, took, smart_ms }
             });

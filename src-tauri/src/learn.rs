@@ -214,7 +214,7 @@ fn looks_like_term(w: &str) -> bool {
 }
 
 /// Edit distance, for "does the fix sound like what was heard?".
-fn levenshtein(a: &str, b: &str) -> usize {
+pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect();
     let mut row: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.chars().enumerate() {
@@ -242,7 +242,7 @@ fn sounds_alike(heard: &str, word: &str) -> bool {
 }
 
 /// Lowercase letters and digits only: "Supa base" -> "supabase".
-fn letters(s: &str) -> String {
+pub(crate) fn letters(s: &str) -> String {
     s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
 }
 
