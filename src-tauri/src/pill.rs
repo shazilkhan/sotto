@@ -32,7 +32,7 @@ use windows::Win32::Graphics::DirectWrite::{
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetMonitorInfoW,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GdiFlush, GetDC, GetMonitorInfoW,
     MonitorFromPoint, MonitorFromWindow, ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER,
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
     MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
@@ -226,9 +226,25 @@ struct Surface {
     dc: HDC,
     bitmap: HBITMAP,
     old: HGDIOBJ,
+    /// The pixels (BGRA, premultiplied, top-down), `w` to a row.
+    bits: *const u8,
+    w: i32,
+    h: i32,
 }
 
 impl Surface {
+    /// Opacity of one pixel of the last frame, 0 when it's off the surface.
+    fn alpha_at(&self, x: i32, y: i32) -> u8 {
+        if x < 0 || y < 0 || x >= self.w || y >= self.h {
+            return 0;
+        }
+        unsafe {
+            // GDI batches drawing; the pixels are only final after a flush.
+            let _ = GdiFlush();
+            *self.bits.add(((y * self.w + x) * 4 + 3) as usize)
+        }
+    }
+
     fn new(w: i32, h: i32) -> Option<Self> {
         unsafe {
             let dc = CreateCompatibleDC(None);
@@ -245,9 +261,12 @@ impl Surface {
                 ..Default::default()
             };
             let mut bits = std::ptr::null_mut();
-            let bitmap = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0).ok()?;
+            let Ok(bitmap) = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) else {
+                let _ = DeleteDC(dc);
+                return None;
+            };
             let old = SelectObject(dc, bitmap.into());
-            Some(Self { dc, bitmap, old })
+            Some(Self { dc, bitmap, old, bits: bits as *const u8, w, h })
         }
     }
 }
@@ -269,8 +288,8 @@ struct Fonts {
 
 struct Pill {
     hwnd: HWND,
-    /// Owns the render target's factory for the life of the window.
-    _d2d: ID2D1Factory,
+    /// Makes the render target, again whenever a frame fails to draw.
+    d2d: ID2D1Factory,
     dw: IDWriteFactory,
     rt: ID2D1DCRenderTarget,
     brush: ID2D1SolidColorBrush,
@@ -288,10 +307,33 @@ struct Pill {
     fullscreen: bool,
     animating: bool,
     bars: [f32; BARS],
+    /// The step that kept the last frame off the screen, if it failed.
+    failing: Option<&'static str>,
 }
 
 thread_local! {
     static PILL: RefCell<Option<Pill>> = const { RefCell::new(None) };
+}
+
+/// Software rendering: a 360x96 surface is trivial on the CPU, and a
+/// hardware target would load the GPU driver (dozens of threads, ~40 MB)
+/// into the process and share the GPU with whatever game is running.
+fn make_target(d2d: &ID2D1Factory) -> windows::core::Result<(ID2D1DCRenderTarget, ID2D1SolidColorBrush)> {
+    let props = D2D1_RENDER_TARGET_PROPERTIES {
+        r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+        pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+        dpiX: 96.0,
+        dpiY: 96.0,
+        usage: D2D1_RENDER_TARGET_USAGE_NONE,
+        minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+    };
+    unsafe {
+        let rt = d2d.CreateDCRenderTarget(&props)?;
+        rt.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+        let brush = rt.CreateSolidColorBrush(&color(INK, 1.0), None)?;
+        Ok((rt, brush))
+    }
 }
 
 fn make_fonts(dw: &IDWriteFactory, scale: f32) -> windows::core::Result<Fonts> {
@@ -504,8 +546,8 @@ impl Pill {
 
         unsafe {
             let rect = RECT { left: 0, top: 0, right: w, bottom: h };
-            if self.rt.BindDC(self.surface.dc, &rect).is_err() {
-                return;
+            if let Err(e) = self.rt.BindDC(self.surface.dc, &rect) {
+                return self.failed("BindDC", e.to_string());
             }
             self.rt.BeginDraw();
             self.rt.Clear(Some(&color(0, 0.0)));
@@ -536,8 +578,13 @@ impl Pill {
             self.rrect(cx - bw / 2.0 - ring, bar_y - bh / 2.0 - ring, cx + bw / 2.0 + ring, bar_y + bh / 2.0 + ring, bh / 2.0 + ring, PAPER, ring_a);
             self.rrect(cx - bw / 2.0, bar_y - bh / 2.0, cx + bw / 2.0, bar_y + bh / 2.0, bh / 2.0, rgb, 1.0);
 
-            if self.rt.EndDraw(None, None).is_err() {
-                return;
+            if let Err(e) = self.rt.EndDraw(None, None) {
+                return self.failed("EndDraw", e.to_string());
+            }
+            // The underline is always drawn solid, so a clear pixel at its
+            // centre means the frame came out blank.
+            if self.surface.alpha_at(cx as i32, bar_y as i32) == 0 {
+                return self.failed("drawing", "the frame came out blank".into());
             }
             let (x, y) = self.top_left();
             let dst = POINT { x, y };
@@ -545,8 +592,37 @@ impl Pill {
             let size = SIZE { cx: w, cy: h };
             let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
             let screen = GetDC(None);
-            let _ = UpdateLayeredWindow(self.hwnd, Some(screen), Some(&dst), Some(&size), Some(self.surface.dc), Some(&src), COLORREF(0), Some(&blend), ULW_ALPHA);
+            let shown = UpdateLayeredWindow(self.hwnd, Some(screen), Some(&dst), Some(&size), Some(self.surface.dc), Some(&src), COLORREF(0), Some(&blend), ULW_ALPHA);
             ReleaseDC(None, screen);
+            if let Err(e) = shown {
+                return self.failed("UpdateLayeredWindow", e.to_string());
+            }
+        }
+        if self.failing.take().is_some() {
+            log::info!("floating pill is drawing again");
+        }
+    }
+
+    /// A frame that never reached the screen. Logged once per cause, and the
+    /// drawing surface is rebuilt so the next frame starts clean.
+    fn failed(&mut self, step: &'static str, why: String) {
+        if self.failing != Some(step) {
+            log::warn!("floating pill: {step} failed ({why}); rebuilding its drawing surface");
+            self.failing = Some(step);
+        }
+        self.rebuild();
+    }
+
+    /// Fresh drawing surface and render target, after a failed frame or a
+    /// display change (a game switching resolution, a monitor waking up).
+    fn rebuild(&mut self) {
+        let (w, h) = self.size_px();
+        if let Some(s) = Surface::new(w, h) {
+            self.surface = s;
+        }
+        match make_target(&self.d2d) {
+            Ok((rt, brush)) => (self.rt, self.brush) = (rt, brush),
+            Err(e) => log::warn!("floating pill: no render target ({e})"),
         }
     }
 
@@ -775,6 +851,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             WM_DISPLAYCHANGE => {
                 let a = clamp_anchor(p.anchor.0, p.anchor.1, p.scale);
                 p.move_to(a);
+                p.rebuild();
                 p.sync();
             }
             _ => return false,
@@ -844,21 +921,7 @@ unsafe fn run(pos: Option<(i32, i32)>) -> windows::core::Result<()> {
 
     let d2d: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
     let dw: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
-    // Software rendering: a 360x96 surface is trivial on the CPU, and a
-    // hardware target would load the GPU driver (dozens of threads, ~40 MB)
-    // into the process and share the GPU with whatever game is running.
-    let props = D2D1_RENDER_TARGET_PROPERTIES {
-        r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-        pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
-        dpiX: 96.0,
-        dpiY: 96.0,
-        usage: D2D1_RENDER_TARGET_USAGE_NONE,
-        minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-    };
-    let rt = d2d.CreateDCRenderTarget(&props)?;
-    rt.SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-    rt.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
-    let brush = rt.CreateSolidColorBrush(&color(INK, 1.0), None)?;
+    let (rt, brush) = make_target(&d2d)?;
     let round = d2d.CreateStrokeStyle(
         &D2D1_STROKE_STYLE_PROPERTIES {
             startCap: D2D1_CAP_STYLE_ROUND,
@@ -881,7 +944,7 @@ unsafe fn run(pos: Option<(i32, i32)>) -> windows::core::Result<()> {
     };
     let mut pill = Pill {
         hwnd,
-        _d2d: d2d,
+        d2d,
         dw,
         rt,
         brush,
@@ -898,6 +961,7 @@ unsafe fn run(pos: Option<(i32, i32)>) -> windows::core::Result<()> {
         fullscreen: is_fullscreen(GetForegroundWindow()),
         animating: false,
         bars: [0.0; BARS],
+        failing: None,
     };
     // The window was created on the primary screen; re-read DPI where it lands.
     pill.move_to(anchor);

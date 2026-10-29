@@ -286,7 +286,6 @@ impl Engine {
     }
 
     fn on_pressed(&mut self) {
-        learn::check_now();
         if self.recording.is_some() {
             if self.hands_free {
                 self.finish();

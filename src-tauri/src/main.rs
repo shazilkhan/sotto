@@ -324,6 +324,9 @@ async fn save_settings(app: AppHandle, shared: State<'_, Arc<Shared>>, settings:
     if old.history_days != s.history_days {
         transcripts::maintain(s.history_days, now_secs());
     }
+    if old.learn_corrections && !s.learn_corrections {
+        learn::stop();
+    }
     tray::show_status(&app, *shared.status.lock().unwrap(), &s);
     let _ = shared.tx.send(Msg::Wake);
     emit_state(&app);
