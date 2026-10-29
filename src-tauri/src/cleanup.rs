@@ -408,6 +408,11 @@ fn near_misses(tokens: &[&str], dictionary: &[Entry]) -> Vec<NearMiss> {
                 if as_typed.eq_ignore_ascii_case(word) || (sl > n && sl <= n + 2 && span.starts_with(tl.as_str())) {
                     continue;
                 }
+                // The word itself next to another word ("Supabase this"):
+                // swapping that span would delete the other word.
+                if end - i > 1 && tokens[i..end].iter().any(|t| letters(t) == *tl || letters(t) == letters(word)) {
+                    continue;
+                }
                 let d = levenshtein(&span, tl);
                 let longest = sl.max(n);
                 if d * 3 > longest {
@@ -530,7 +535,6 @@ pub fn bench(path: &str, smart: bool) {
     if smart && !crate::secret::is_set() {
         return println!("Smart needs an API key: save one in Settings, or set ANTHROPIC_API_KEY");
     }
-    let saved = crate::dictionary::load();
     let (mut total, mut graded, mut passed, mut changed) = (0, 0, 0, 0);
     let mut times = Vec::new();
     let (mut calls, mut fallbacks) = (0, 0);
@@ -547,8 +551,10 @@ pub fn bench(path: &str, smart: bool) {
             }
         };
         total += 1;
-        let mut dictionary = saved.clone();
-        dictionary.extend(case.dictionary.iter().map(|(w, a)| Entry { word: w.clone(), aliases: a.clone(), learned: false }));
+        // Only the case's own words, so the results don't depend on whose
+        // Dictionary the bench runs with.
+        let dictionary: Vec<Entry> =
+            case.dictionary.iter().map(|(w, a)| Entry { word: w.clone(), aliases: a.clone(), learned: false }).collect();
         let ctx = Context { app: case.app.clone(), light: true, dictionary, known: Some(crate::spell::known) };
         let t = Instant::now();
         let mut out = clean(&case.raw, &ctx);
@@ -712,6 +718,10 @@ mod tests {
         assert!(has_near_miss("The army built a super base near the coast.", &ctx.dictionary));
         assert_eq!(clean("I'm super busy today.", &ctx), "I'm super busy today.");
         assert_eq!(clean("Supabase's docs are good.", &ctx), "Supabase's docs are good.");
+        // The word itself never swallows the word next to it.
+        assert_eq!(clean("I pushed the fix to Supabase this morning.", &ctx), "I pushed the fix to Supabase this morning.");
+        assert_eq!(clean("I pushed the fix to supa base this morning.", &ctx), "I pushed the fix to Supabase this morning.");
+        assert!(!has_near_miss("We use Supabase this year.", &ctx.dictionary));
         assert!(!has_near_miss("Sounds good to me.", &ctx.dictionary));
     }
 

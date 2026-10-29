@@ -27,13 +27,13 @@ Make only these changes:
 
 1. Self-corrections. When the speaker corrects something they just said, keep only the corrected version and drop the correction words ("no wait", "I mean", "sorry", "scratch that"). Words like "actually", "sorry" or "I mean" are not corrections unless they replace something said just before.
 
-2. Numbers. Use digits for amounts, money, percentages, times, dates, ages, measurements, versions, scores, phone numbers, numbers in names, and any count of 10 or more. Write times like 3:30 PM and 9 AM. Keep one to nine as words when they just count things, even in a question or a request ("two options", "three reasons", "give me four ideas"), and keep number words that aren't quantities ("one of them", "no one", "the one I want", "once").
+2. Numbers. Use digits for amounts, money, percentages, times, dates, ages, measurements, versions, scores, phone numbers, numbers in names, and any count of 10 or more. Write times like 3:30 or 9 AM, adding AM or PM only when the speaker said it (or said morning, afternoon or evening). Keep one to nine as words when they just count things, even in a question or a request ("two options", "three reasons", "give me four ideas"), and keep number words that aren't quantities ("one of them", "no one", "the one I want", "once").
 
 3. Lists. When the speaker counts items out ("first ..., second ...", "number one ..., number two ..."), put each item on its own line as a numbered list (1., 2., 3.). Keep any lead-in sentence on its own line before the list. Capitalise each item and drop its final full stop. Don't turn a sentence that just mentions a few things into a list.
 
 4. Computer terms. Write them the way they're typed: email addresses ("sam at example dot com" is sam@example.com), web addresses, file names ("package dot json" is package.json), paths, and the usual spelling of commands and tools (npm, git, VS Code, GitHub, JavaScript).
 
-5. Spellings. Spell every term in the speaker's dictionary exactly as listed. Speech recognition often mishears those terms as similar-sounding words ("super base" or "Superbass" for Supabase); use the term when the sentence is about it, and leave ordinary uses of similar words alone ("the army's super base").
+5. Spellings. Spell every term in the speaker's dictionary exactly as listed. Speech recognition often mishears those terms as similar-sounding words ("super base" or "Superbass" for Supabase); use the term when the sentence is about it, and leave ordinary uses of similar words alone ("the army's super base"). Only put a term where the text has words that sound like it. Never swap a different name for a dictionary name: if the text says "Soto" and the dictionary has "Arlan", keep "Soto".
 
 Leave everything else exactly as it is: the wording, word order, tone, grammar, punctuation, line breaks, "- " bullets, and anything already written as digits or symbols. Don't rephrase, and don't add or remove anything else. If nothing needs changing, return the text unchanged.
 
@@ -168,7 +168,7 @@ fn extract(reply: &str) -> &str {
 
 /// A reply that grew a lot or lost most of the words is a rewrite or an
 /// answer, not a cleanup; the Light text is safer.
-fn plausible(input: &str, output: &str) -> Result<(), String> {
+fn plausible(input: &str, output: &str, dictionary: &[Entry]) -> Result<(), String> {
     if output.is_empty() {
         return Err("empty reply".into());
     }
@@ -179,7 +179,39 @@ fn plausible(input: &str, output: &str) -> Result<(), String> {
     if a >= 8 && b * 10 < a * 4 {
         return Err("reply dropped most of the words".into());
     }
+    if dictionary.iter().any(|e| count(output, &e.word) > count(input, &e.word) && !said(input, e)) {
+        return Err("reply put in a Dictionary word that wasn't said".into());
+    }
     Ok(())
+}
+
+/// Matching form of a word: letters and digits, lowercase, without "'s".
+fn key(w: &str) -> String {
+    let w = w.trim_matches(|c: char| !c.is_alphanumeric());
+    crate::learn::letters(w.strip_suffix("'s").or_else(|| w.strip_suffix("’s")).unwrap_or(w))
+}
+
+/// How often `term` (one or more words) appears in `text`.
+fn count(text: &str, term: &str) -> usize {
+    let words: Vec<String> = text.split_whitespace().map(key).collect();
+    let term: Vec<String> = term.split_whitespace().map(key).collect();
+    if term.is_empty() || term.len() > words.len() {
+        return 0;
+    }
+    words.windows(term.len()).filter(|w| *w == &term[..]).count()
+}
+
+/// The text has something the Dictionary word could have been misheard
+/// as: one of its spellings, the same letters split up ("n p m" for npm),
+/// or a near-miss ("Superbass" for Supabase). Without one, a reply that
+/// adds the word swapped in a different name ("Soto" for "Arlan").
+fn said(text: &str, e: &Entry) -> bool {
+    if e.aliases.iter().any(|a| count(text, a) > 0) || crate::cleanup::has_near_miss(text, std::slice::from_ref(e)) {
+        return true;
+    }
+    let target = crate::learn::letters(&e.word);
+    let words: Vec<String> = text.split_whitespace().map(key).collect();
+    (1..=4).any(|n| words.windows(n).any(|w| w.concat() == target))
 }
 
 /// Runs the Smart pass on text that Light already cleaned.
@@ -230,7 +262,7 @@ pub fn fix(text: &str, app: Option<&str>, dictionary: &[Entry]) -> Result<String
         })
         .unwrap_or_default();
     let fixed = extract(&out).to_string();
-    plausible(text, &fixed)?;
+    plausible(text, &fixed, dictionary)?;
     Ok(fixed)
 }
 
@@ -260,10 +292,27 @@ mod tests {
 
     #[test]
     fn implausible_replies_are_rejected() {
-        assert!(plausible("Ship it on Friday.", "Ship it on Friday.").is_ok());
-        assert!(plausible("Ship it.", "").is_err());
+        assert!(plausible("Ship it on Friday.", "Ship it on Friday.", &[]).is_ok());
+        assert!(plausible("Ship it.", "", &[]).is_err());
         let long = "Sure, here is a detailed answer to your question about shipping, with several steps to follow and lots more.";
-        assert!(plausible("Ship it?", long).is_err());
-        assert!(plausible("We should ship it on Friday after the client signs the contract.", "Done.").is_err());
+        assert!(plausible("Ship it?", long, &[]).is_err());
+        assert!(plausible("We should ship it on Friday after the client signs the contract.", "Done.", &[]).is_err());
+    }
+
+    fn entry(word: &str, aliases: &[&str]) -> Entry {
+        Entry { word: word.into(), aliases: aliases.iter().map(|a| a.to_string()).collect(), learned: false }
+    }
+
+    #[test]
+    fn a_dictionary_word_must_have_been_said() {
+        let dict = [entry("Arlan", &["Arlen"]), entry("Supabase", &[]), entry("npm", &[])];
+        // A different name swapped for a Dictionary word.
+        assert!(plausible("Hey Soto, can you search Google for me?", "Hey Arlan, can you search Google for me?", &dict).is_err());
+        // Mishearings of the word itself are fine.
+        assert!(plausible("We moved the auth to Superbass.", "We moved the auth to Supabase.", &dict).is_ok());
+        assert!(plausible("Run n p m install first.", "Run npm install first.", &dict).is_ok());
+        assert!(plausible("Ask Arlen about Supabase's pricing.", "Ask Arlan about Supabase's pricing.", &dict).is_ok());
+        // Words already in the text can stay, or go with a self-correction.
+        assert!(plausible("Send it to Arlan, no wait, to Omar.", "Send it to Omar.", &dict).is_ok());
     }
 }

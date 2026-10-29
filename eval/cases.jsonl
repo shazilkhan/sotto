@@ -44,3 +44,4 @@
 {"note": "first is not a list (Smart)", "raw": "First of all, thanks for coming today.", "expected": "First of all, thanks for coming today."}
 {"note": "question with a number is not answered (Smart)", "raw": "Can you list five ways to grow a newsletter?", "expected": "Can you list five ways to grow a newsletter?"}
 {"note": "name with a number, from the dictionary", "raw": "I'm calling from nifty fifty solutions.", "dictionary": {"Nifty 50 Solutions": ["Nifty fifty Solutions"]}, "expected": "I'm calling from Nifty 50 Solutions."}
+{"note": "a different name is not a dictionary name (Smart)", "raw": "Hey Soto, can you send the twenty invoices to Omar?", "dictionary": {"Arlan": ["Arlen"]}, "expected": "Hey Soto, can you send the 20 invoices to Omar?"}
