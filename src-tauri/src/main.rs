@@ -435,6 +435,10 @@ fn main() {
     }
     logger::init();
     log::info!("Sotto {} starting", env!("CARGO_PKG_VERSION"));
+    #[cfg(not(debug_assertions))]
+    if tauri::is_dev() {
+        log::error!("built with plain cargo, so the app window has no pages; use scripts/release-local.ps1");
+    }
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {

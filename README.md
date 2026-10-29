@@ -173,9 +173,14 @@ Node 20+ and pnpm.
 
 ```bash
 pnpm install
-pnpm tauri build --no-bundle     # exe at src-tauri/target/release/sotto.exe
+pnpm tauri build --no-bundle     # exe at src-tauri/target/release/sotto.exe (never plain cargo build)
 pnpm tauri build                 # NSIS installer
 ```
+
+To rebuild and restart a running Sotto in one step, run
+`scripts/release-local.ps1`. It always builds through Tauri (plain
+`cargo build --release` leaves out the app window's pages, so the window
+tries `localhost`) and starts the new copy through Explorer.
 
 Checks:
 - `cd src-tauri && cargo test` runs the unit tests.
